@@ -170,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.5"
+    plugin_version = "0.5.6"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -785,25 +785,7 @@ class MusicDownloader(_PluginBase):
         live = live_raw or {}
         live_available = live_raw is not None
 
-        changed = False
-        for item in history:
-            if item.get("status") != "downloading":
-                continue
-            lt = live.get(item["hash"])
-            if not lt:
-                continue
-            state = lt.get("state")
-            if state == "completed":
-                item["status"] = "completed"
-                item["finish_time"] = datetime.now().isoformat()
-                changed = True
-                self._push_result("download_completed", {
-                    "hash": item["hash"], "title": item.get("title"),
-                    "save_path": item.get("save_path"),
-                }, f"下载成功：{item.get('title')}", f"保存到 {item.get('save_path')}")
-            elif state == "paused":
-                item["status"] = "paused"
-                changed = True
+        history, changed = self._reconcile_status(history, live)
         if changed:
             self.save_data("downloads", history)
 
@@ -1279,12 +1261,48 @@ class MusicDownloader(_PluginBase):
         finally:
             ex.shutdown(wait=False)
 
+    def _reconcile_status(self, history: List[dict],
+                          live: Dict[str, dict]) -> Tuple[List[dict], bool]:
+        """用下载器实时状态对账历史状态：进度>=99.9% 或 state=completed 视为完成；<100% 的 paused 视为暂停。
+
+        同时推送给 Agent（download_completed）。返回 (history, changed)。
+        """
+        changed = False
+        for item in history:
+            if item.get("status") != "downloading":
+                continue
+            lt = live.get(item["hash"])
+            if not lt:
+                continue
+            state = lt.get("state")
+            progress = lt.get("progress")
+            try:
+                done = progress is not None and float(progress) >= 99.9
+            except (TypeError, ValueError):
+                done = False
+            if state == "completed" or done:
+                item["status"] = "completed"
+                item["finish_time"] = item.get("finish_time") or datetime.now().isoformat()
+                changed = True
+                self._push_result("download_completed", {
+                    "hash": item["hash"], "title": item.get("title"),
+                    "save_path": item.get("save_path"),
+                    "size": item.get("size"), "size_text": item.get("size_text"),
+                }, f"下载成功：{item.get('title')}", f"保存到 {item.get('save_path')}")
+            elif state == "paused":
+                item["status"] = "paused"
+                changed = True
+        return history, changed
+
     def _history_rows(self, live: Optional[Dict[str, dict]] = None) -> List[dict]:
         """下载历史 + 下载器实时状态（属性安全）"""
         history = self.get_data("downloads") or []
         if live is None:
             hashes = [h.get("hash") for h in history if h.get("hash")]
             live = self._live_torrents(hashs=hashes) or {}
+        history, _changed = self._reconcile_status(history, live)
+        if _changed:
+            self.save_data("downloads", history)
         status_map = {"downloading": "下载中", "completed": "已完成",
                       "failed": "失败", "paused": "暂停"}
         rows = []
