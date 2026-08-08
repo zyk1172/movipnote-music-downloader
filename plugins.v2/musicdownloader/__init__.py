@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import Body, Depends, Header, HTTPException
 
 from app.chain.download import DownloadChain
+from app.core.event import Event, eventmanager
 from app.core.config import settings
 from app.chain.search import SearchChain
 from app.core.context import Context, MediaInfo
@@ -36,7 +37,7 @@ from app.helper.directory import validate_download_save_path
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import TorrentInfo
-from app.schemas.types import MediaType, NotificationType, SystemConfigKey
+from app.schemas.types import EventType, MediaType, NotificationType, SystemConfigKey
 from app.utils.crypto import HashUtils
 
 from .screener import (
@@ -101,7 +102,11 @@ if _HAS_AGENT_TOOLS:
 
     class MusicSearchTool(MoviePilotTool):
         name: str = "music_search"
-        description: str = "在所有启用站点搜索并筛查音乐资源（艺人/专辑），返回无损优先的候选列表"
+        description: str = (
+            "搜索并筛查音乐资源（艺人/专辑/单曲），返回候选（含 quality/relevance/album_matched/ref）。"
+            "决策规则：album_matched=true 才可自动下载；album_matched_any=false 必须展示候选让用户选择"
+            "（中文专辑请传 album_aliases 英文名，如 魔杰座->Capricorn）；单曲无结果会自动退艺人搜索。"
+        )
         args_schema: type = MusicSearchInput
 
         async def run(self, keyword: str = None, artist: str = None,
@@ -128,7 +133,11 @@ if _HAS_AGENT_TOOLS:
 
     class MusicDownloadTool(MoviePilotTool):
         name: str = "music_download"
-        description: str = "把音乐资源加入 MoviePilot 下载器，保存到音乐下载目录"
+        description: str = (
+            "按 hash:id ref 把音乐加入 MoviePilot 下载器，保存到音乐下载目录。"
+            "ref 必须来自 music_search 结果；失效需重新搜索。返回 hash/status；"
+            "失败（如 下载种子内容为空）可换下一个候选 ref 重试。"
+        )
         args_schema: type = MusicDownloadInput
 
         async def run(self, ref: str = None, site_id: int = None,
@@ -152,7 +161,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.4"
+    plugin_version = "0.4.5"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -249,7 +258,63 @@ class MusicDownloader(_PluginBase):
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
-        return []
+        """注册斜杠命令：MoviePilot 智能助手可用 run_slash_command 直接触发"""
+        return [{
+            "cmd": "/音乐下载",
+            "event": EventType.CommandExcute,
+            "desc": "搜索并下载音乐。用法：/音乐下载 <艺人> <专辑>，如：/音乐下载 周杰伦 魔杰座",
+            "category": "音乐",
+            "data": {},
+        }]
+
+    @eventmanager.register(EventType.CommandExcute)
+    def command_handler(self, event: Event = None):
+        """处理 /音乐下载 命令：搜索 -> 按决策规则自动下载或展示候选 -> 回复用户"""
+        if not event or not event.event_data:
+            return
+        event_str = event.event_data.get("cmd") or ""
+        if not str(event_str).startswith("/音乐下载"):
+            return
+        args = str(event_str)[len("/音乐下载"):].strip()
+        userid = event.event_data.get("user")
+        channel = event.event_data.get("channel")
+        if not args:
+            self.post_message(channel=channel, userid=userid, title="音乐下载",
+                              text="用法：/音乐下载 <艺人> <专辑>，如：/音乐下载 周杰伦 魔杰座")
+            return
+        parts = args.split()
+        artist = parts[0] if len(parts) > 1 else None
+        album = " ".join(parts[1:]) if len(parts) > 1 else None
+        keyword = args if len(parts) <= 1 else None
+        asyncio.create_task(self._run_command_search(
+            artist=artist, album=album, keyword=keyword,
+            userid=userid, channel=channel))
+
+    async def _run_command_search(self, artist: str, album: str, keyword: str,
+                                  userid, channel) -> None:
+        """命令执行体：搜索 -> 决策 -> 下载/展示候选 -> 回复"""
+        data = await self.do_search(keyword=keyword, artist=artist, album=album, limit=5)
+        results = data.get("results") or []
+        if not results:
+            self.post_message(channel=channel, userid=userid, title="音乐下载",
+                              text=f"没有找到 {data.get('keyword')} 的音乐资源，可换关键词或专辑别名再试")
+            return
+        if data.get("album_matched_any"):
+            best = max(results, key=lambda r: (r["quality"], r["relevance"],
+                                               r["seeders"] or 0))
+            dl = await self.do_download(ref=best["ref"])
+            if dl.get("success"):
+                self.post_message(channel=channel, userid=userid, title="音乐下载",
+                                  text=f"已自动下载最优：{best['title']} [{best['quality_label']}]（hash {dl['data']['hash'][:12]}）")
+            else:
+                self.post_message(channel=channel, userid=userid, title="音乐下载",
+                                  text=f"自动下载失败：{dl.get('message')}，可换下一个候选重试")
+        else:
+            lines = "\n".join(
+                f"{i + 1}. {r['title']} [{r['quality_label']}] {r['site_name']} {r['size_text']}"
+                for i, r in enumerate(results[:5]))
+            self.post_message(channel=channel, userid=userid, title="音乐下载",
+                              text=f"未确认到目标专辑（可能是中文专辑英文建种），请从候选中选择：\n{lines}")
 
     def get_api(self) -> List[Dict[str, Any]]:
         """REST API，挂载于 /api/v1/plugin/MusicDownloader/*。
@@ -600,13 +665,7 @@ class MusicDownloader(_PluginBase):
     async def api_tasks(self, status: Optional[str] = None) -> dict:
         """查询任务：合并插件历史 + 下载器实时状态；检测到完成/暂停时更新并推送结果"""
         history = self.get_data("downloads") or []
-        live: Dict[str, dict] = {}
-        try:
-            torrents = DownloadChain().list_torrents(include_all_tags=True) or []
-            live = {t.hash: self._torrent_to_dict(t)
-                    for t in torrents if t.hash}
-        except Exception as err:
-            logger.error(f"【{self.plugin_name}】查询下载器任务失败: {err}")
+        live = self._live_torrents()
 
         changed = False
         for item in history:
@@ -927,16 +986,35 @@ class MusicDownloader(_PluginBase):
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         }
 
+    def _live_torrents(self, timeout: float = 3.0) -> Dict[str, dict]:
+        """查询下载器实时任务（线程+超时），防止下载器挂起拖垮 MoviePilot 事件循环。
+
+        失败/超时返回 {}，调用方回退为仅插件历史（无实时状态）。
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _query() -> Dict[str, dict]:
+            try:
+                torrents = DownloadChain().list_torrents(include_all_tags=True) or []
+                return {t.hash: self._torrent_to_dict(t)
+                        for t in torrents if t.hash}
+            except Exception as err:
+                logger.warn(f"【{self.plugin_name}】查询下载器失败: {err}")
+                return {}
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            return ex.submit(_query).result(timeout=timeout)
+        except Exception:
+            logger.warn(f"【{self.plugin_name}】查询下载器超时({timeout}s)，跳过实时状态")
+            return {}
+        finally:
+            ex.shutdown(wait=False)
+
     def _history_rows(self) -> List[dict]:
         """下载历史 + 下载器实时状态（属性安全）"""
         history = self.get_data("downloads") or []
-        live: Dict[str, dict] = {}
-        try:
-            torrents = DownloadChain().list_torrents(include_all_tags=True) or []
-            live = {t.hash: self._torrent_to_dict(t)
-                    for t in torrents if t.hash}
-        except Exception as err:
-            logger.warn(f"【{self.plugin_name}】获取下载器实时状态失败: {err}")
+        live = self._live_torrents()
         status_map = {"downloading": "下载中", "completed": "已完成",
                       "failed": "失败", "paused": "暂停"}
         rows = []
