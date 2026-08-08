@@ -162,7 +162,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.8"
+    plugin_version = "0.4.9"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -705,7 +705,9 @@ class MusicDownloader(_PluginBase):
     async def api_tasks(self, status: Optional[str] = None) -> dict:
         """查询任务：合并插件历史 + 下载器实时状态；检测到完成/暂停时更新并推送结果"""
         history = self.get_data("downloads") or []
-        live = self._live_torrents() or {}
+        live_raw = self._live_torrents()
+        live = live_raw or {}
+        live_available = live_raw is not None
 
         changed = False
         for item in history:
@@ -744,7 +746,8 @@ class MusicDownloader(_PluginBase):
             })
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        return {"success": True, "data": {"tasks": tasks}}
+        return {"success": True, "data": {"live_available": live_available,
+                                          "tasks": tasks}}
 
     @staticmethod
     def _test_itunes() -> bool:
@@ -782,8 +785,12 @@ class MusicDownloader(_PluginBase):
         }}
 
     async def api_history(self) -> dict:
-        """下载历史（含实时状态）"""
-        return {"success": True, "data": {"tasks": self._history_rows()}}
+        """下载历史（含实时状态）；live_available=false 表示下载器查询失败，需用 /on_complete 判断完成"""
+        live = self._live_torrents()
+        return {"success": True, "data": {
+            "live_available": live is not None,
+            "tasks": self._history_rows(live=live),
+        }}
 
     async def api_history_clear(self, payload: dict = Body(default_factory=dict)) -> dict:
         """清空下载历史"""
@@ -1131,10 +1138,11 @@ class MusicDownloader(_PluginBase):
         finally:
             ex.shutdown(wait=False)
 
-    def _history_rows(self) -> List[dict]:
+    def _history_rows(self, live: Optional[Dict[str, dict]] = None) -> List[dict]:
         """下载历史 + 下载器实时状态（属性安全）"""
         history = self.get_data("downloads") or []
-        live = self._live_torrents() or {}
+        if live is None:
+            live = self._live_torrents() or {}
         status_map = {"downloading": "下载中", "completed": "已完成",
                       "failed": "失败", "paused": "暂停"}
         rows = []
