@@ -34,6 +34,7 @@ from app.core.metainfo import MetaInfo
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
 from app.helper.directory import validate_download_save_path
+from app.helper.torrent import TorrentHelper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import TorrentInfo
@@ -41,7 +42,8 @@ from app.schemas.types import EventType, MediaType, NotificationType, SystemConf
 from app.utils.crypto import HashUtils
 
 from .screener import (
-    build_keyword, classify, evaluate, fmt_size, norm, quality_label, screen,
+    build_keyword, check_torrent_files, classify, evaluate,
+    fmt_size, norm, quality_label, screen,
 )
 
 try:  # v2 智能体工具支持
@@ -132,6 +134,8 @@ if _HAS_AGENT_TOOLS:
         magnet: Optional[str] = Field(None, description="磁力链（与 ref/index 二选一）")
         title: Optional[str] = Field(None, description="种子标题（可选）")
         max_size_gb: Optional[float] = Field(None, description="下载体积上限(GB)，超过则拒绝（单曲自动下载建议传）")
+        verify_song: Optional[str] = Field(None, description="目标歌曲名：下载前校验种子文件清单确实包含该歌，否则拒绝")
+        verify_artist: Optional[str] = Field(None, description="目标艺人名（配合 verify_song 校验）")
 
     class MusicDownloadTool(MoviePilotTool):
         name: str = "music_download"
@@ -145,6 +149,7 @@ if _HAS_AGENT_TOOLS:
         async def run(self, ref: str = None, site_id: int = None,
                       index: int = None, magnet: str = None,
                       title: str = None, max_size_gb: float = None,
+                      verify_song: str = None, verify_artist: str = None,
                       **kwargs) -> str:
             import json
             inst = _get_instance()
@@ -152,7 +157,8 @@ if _HAS_AGENT_TOOLS:
                 return "插件未启用"
             result = await inst.do_download(
                 ref=ref, site_id=site_id, index=index,
-                magnet=magnet, title=title, size_limit_gb=max_size_gb)
+                magnet=magnet, title=title, size_limit_gb=max_size_gb,
+                verify_song=verify_song, verify_artist=verify_artist)
             return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -164,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.1"
+    plugin_version = "0.5.2"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -188,6 +194,7 @@ class MusicDownloader(_PluginBase):
     _show_uncertain: bool = True
     _fallback_artist: bool = True
     _single_fallback_album: bool = True
+    _track_verify: bool = True
     _notify_url: str = ""
     _notify_token: str = ""
     _notify_enabled: bool = False
@@ -231,6 +238,7 @@ class MusicDownloader(_PluginBase):
         self._show_uncertain = bool(config.get("show_uncertain", True))
         self._fallback_artist = bool(config.get("fallback_artist", True))
         self._single_fallback_album = bool(config.get("single_fallback_album", True))
+        self._track_verify = bool(config.get("track_verify", True))
         self._notify_enabled = bool(config.get("notify_enabled", False))
         self._notify_on_search = bool(config.get("notify_on_search", True))
         self._notify_url = str(config.get("notify_url") or "").strip()
@@ -254,6 +262,8 @@ class MusicDownloader(_PluginBase):
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
             "single_fallback_album": self._single_fallback_album,
+            "track_verify": self._track_verify,
+            "track_verify": self._track_verify,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
@@ -314,7 +324,9 @@ class MusicDownloader(_PluginBase):
         if data.get("album_matched_any"):
             best = max(results, key=lambda r: (r["quality"], r["relevance"],
                                                r["seeders"] or 0))
-            dl = await self.do_download(ref=best["ref"])
+            dl = await self.do_download(ref=best["ref"],
+                                         verify_song=album,
+                                         verify_artist=artist)
             if dl.get("success"):
                 self.post_message(channel=channel, userid=userid, title="音乐下载",
                                   text=f"已自动下载最优：{best['title']} [{best['quality_label']}]（hash {dl['data']['hash'][:12]}）")
@@ -564,7 +576,9 @@ class MusicDownloader(_PluginBase):
     async def do_download(self, ref: str = None, site_id: int = None,
                           index: int = None, magnet: str = None,
                           title: str = None, torrent_obj: dict = None,
-                          size_limit_gb: Optional[float] = None) -> dict:
+                          size_limit_gb: Optional[float] = None,
+                          verify_song: str = None,
+                          verify_artist: str = None) -> dict:
         """统一下载入口：ref(hash:id) / site_id+index / torrent 对象 / magnet"""
         self._refresh_dir_status()
         if not self._dir_valid:
@@ -604,6 +618,24 @@ class MusicDownloader(_PluginBase):
                    f"资源 {fmt_size(torrent.size)} 超过大小上限 {size_limit_gb}GB")
                 return {"success": False,
                         "message": f"资源 {fmt_size(torrent.size)} 超过大小上限 {size_limit_gb}GB，已拒绝下载"}
+            # 曲目级内容校验：确认资源真的包含目标歌曲（标题命中但内容不含 -> 拒绝）
+            content_verified = None
+            matched_files = []
+            if self._track_verify and verify_song:
+                v_ok, v_matched, v_note = await asyncio.to_thread(
+                    self._verify_torrent_content, torrent, verify_song, verify_artist)
+                content_verified = v_ok
+                matched_files = v_matched
+                if v_ok is False:
+                    self._push_result("download_failed", {
+                        "title": torrent.title or title or "",
+                        "reason": "资源不含目标歌曲（内容不匹配）",
+                        "matched_files": [],
+                    }, f"下载失败：{torrent.title or title or ''}",
+                       "种子文件清单中未找到目标歌曲，已拒绝下载")
+                    return {"success": False,
+                            "message": "资源不含目标歌曲（内容不匹配），已拒绝下载",
+                            "content_verified": False}
             # 音乐无影视媒体信息：构造最小 MediaInfo（type=未知），避免 download_single
             # 在登记下载历史等环节因 mediainfo=None 崩溃
             media = MediaInfo()
@@ -651,6 +683,8 @@ class MusicDownloader(_PluginBase):
                                               "save_path": self._music_dir,
                                               "size": torrent.size or 0,
                                               "size_text": fmt_size(torrent.size),
+                                              "content_verified": content_verified,
+                                              "matched_files": matched_files,
                                               "label": self._label,
                                               "status": "downloading"}}
 
@@ -725,6 +759,8 @@ class MusicDownloader(_PluginBase):
             index=payload.get("index"), magnet=None,
             title=payload.get("title"), torrent_obj=payload.get("torrent"),
             size_limit_gb=payload.get("max_size_gb"),
+            verify_song=payload.get("verify_song"),
+            verify_artist=payload.get("verify_artist"),
         )
         return result
 
@@ -881,6 +917,8 @@ class MusicDownloader(_PluginBase):
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
             "single_fallback_album": self._single_fallback_album,
+            "track_verify": self._track_verify,
+            "track_verify": self._track_verify,
             "notify_enabled": self._notify_enabled,
             "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
@@ -898,6 +936,30 @@ class MusicDownloader(_PluginBase):
             self._dir_valid = True
         except ValueError as err:
             self._dir_error = str(err)
+
+    @staticmethod
+    def _verify_torrent_content(torrent: TorrentInfo, song: str,
+                                artist: str) -> Tuple[Optional[bool], List[str], str]:
+        """下载种子并解析文件清单，校验是否包含目标歌曲（同步，线程内调用）
+
+        :return: (是否命中, 命中文件, 提示)
+          True/False/None（None=整轨/磁力/无法校验）
+        """
+        try:
+            content, _folder, files = DownloadChain().download_torrent(torrent)
+        except Exception as err:
+            logger.warn(f"【MusicDownloader】获取种子文件失败: {err}")
+            return None, [], f"获取种子失败: {err}"
+        if not content or isinstance(content, str):
+            return None, [], "磁力链/种子内容为空，无法逐曲校验"
+        try:
+            _, file_list = TorrentHelper().get_fileinfo_from_torrent_content(content)
+        except Exception:
+            file_list = files or []
+        ok, matched = check_torrent_files(file_list, song, artist)
+        if ok is None:
+            return None, [], "整轨/单文件，无法逐曲校验"
+        return ok, matched, ""
 
     @staticmethod
     def _resolve_album(artist: str, song: str) -> Optional[str]:
@@ -1084,6 +1146,11 @@ class MusicDownloader(_PluginBase):
                                       "props": {"model": "single_fallback_album", "label": "单曲降级专辑",
                                                 "hint": "单曲无资源时经iTunes解析所属专辑下载（受大小上限约束）",
                                                 "persistent-hint": True}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
+                         "content": [{"component": "VSwitch",
+                                      "props": {"model": "track_verify", "label": "曲目内容校验",
+                                                "hint": "下载前解析种子文件，确认包含目标歌曲；不含则拒绝",
+                                                "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 3},
@@ -1147,6 +1214,8 @@ class MusicDownloader(_PluginBase):
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
             "single_fallback_album": self._single_fallback_album,
+            "track_verify": self._track_verify,
+            "track_verify": self._track_verify,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,

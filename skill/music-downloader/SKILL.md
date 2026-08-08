@@ -25,7 +25,7 @@ metadata:
 
 1. `music_search` 搜索（优先给 `artist`+`album`；中文专辑务必给 `album_aliases` 英文名，如 魔杰座→Capricorn）。
 2. 按决策规则处理结果（见下）。
-3. `music_download` 用所选条目的 `ref` 下载。
+3. `music_download` 用所选条目的 `ref` 下载；单曲场景传 `verify_song`/`verify_artist` 做曲目级内容校验（种子文件不含目标歌曲会拒绝）。
 4. 结果状态由插件以 `music.result` 推送（`no_resource`/`search_ready`/`download_added`/`download_completed`/`download_failed`），也可用插件 `/tasks` 拉取（`live_available=false` 时改用 qBittorrent「完成后运行外部程序」回调 `/on_complete` 判断完成）。
 
 ## 决策规则（必须遵守，防止下错专辑）

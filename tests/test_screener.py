@@ -149,3 +149,24 @@ def test_max_size_gb_filters_album():
                                   "max_size_gb": 5.0})
     titles = [r["title"] for r in out["results"]]
     assert titles == ["Michael Jackson - Thriller FLAC"], f"超限专辑未被过滤: {titles}"
+
+
+def test_check_torrent_files():
+    # 命中：分轨文件含歌名
+    ok, matched = screener.check_torrent_files(
+        ["01 Bohemian Rhapsody.flac", "02 Somebody to Love.flac"],
+        "Bohemian Rhapsody", "Queen")
+    assert ok is True and matched, (ok, matched)
+    # 不匹配：多音频文件但都不含目标歌曲
+    ok, matched = screener.check_torrent_files(
+        ["01 Song A.flac", "02 Song B.flac"], "Poker Face", "Lady Gaga")
+    assert ok is False
+    # 整轨单文件：无法逐曲校验 -> None（放行但标注）
+    ok, matched = screener.check_torrent_files(["Queen - A Night at the Opera.flac"],
+                                               "Bohemian Rhapsody", "Queen")
+    assert ok is None
+    # 艺人命中也算
+    ok, matched = screener.check_torrent_files(
+        ["Lady Gaga - Poker Face.mp3", "Lady Gaga - Just Dance.mp3"],
+        "Poker Face", None)
+    assert ok is True

@@ -283,3 +283,45 @@ def evaluate(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         "correct": correct, "total": overall,
         "overall_accuracy": correct / overall if overall else 0.0,
     }
+
+
+AUDIO_EXTENSIONS = (".flac", ".ape", ".wav", ".mp3", ".aac", ".m4a", ".ogg",
+                    ".wv", ".dsf", ".dff", ".aiff", ".alac", ".tak")
+
+
+def check_torrent_files(files: Optional[List[str]], song: Optional[str],
+                        artist: Optional[str]) -> Tuple[Optional[bool], List[str]]:
+    """
+    曲目级内容校验：检查种子文件清单是否包含目标歌曲。
+
+    :param files: 种子内文件列表（文件名或路径）
+    :param song: 目标歌曲名
+    :param artist: 目标艺人名
+    :return: (是否命中, 命中的文件列表)
+        True  -> 存在命中文件
+        False -> 有多个音频文件但均不含目标歌曲（内容不匹配）
+        None  -> 无法逐曲校验（整轨单文件 / 无音频文件 / 磁力链等）
+    """
+    def norm(x: str) -> str:
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(x).lower())
+
+    song_n = norm(song) if song and len(str(song).strip()) >= 3 else ""
+    artist_n = norm(artist) if artist else ""
+    if not song_n and not artist_n:
+        return None, []
+
+    audio_files = [f for f in (files or []) if str(f).lower().endswith(AUDIO_EXTENSIONS)]
+    if len(audio_files) <= 1:
+        # 整轨单文件 / 无音频文件：无法逐曲校验
+        return None, []
+
+    matched = []
+    for f in audio_files:
+        fn = norm(f)
+        if song_n and song_n in fn:
+            matched.append(str(f))
+        elif artist_n and artist_n in fn:
+            matched.append(str(f))
+    if matched:
+        return True, matched[:5]
+    return False, []
