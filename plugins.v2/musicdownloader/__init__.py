@@ -150,7 +150,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.0"
+    plugin_version = "0.4.1"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -176,7 +176,6 @@ class MusicDownloader(_PluginBase):
     _notify_token: str = ""
     _notify_enabled: bool = False
     _webhook_token: str = ""
-    _check_interval: int = 60
 
     # 最近一次搜索摘要（仅内存，用于响应与日志）
     _last_kw: str = ""
@@ -214,10 +213,6 @@ class MusicDownloader(_PluginBase):
         self._notify_url = str(config.get("notify_url") or "").strip()
         self._notify_token = str(config.get("notify_token") or "").strip()
         self._webhook_token = str(config.get("webhook_token") or "").strip()
-        try:
-            self._check_interval = int(config.get("check_interval") or 60)
-        except (TypeError, ValueError):
-            self._check_interval = 60
 
         # 校验音乐下载目录（MoviePilot 已配置下载目录或其子目录）
         self._refresh_dir_status()
@@ -234,11 +229,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
-            "check_interval": self._check_interval,
         })
 
         if self._enabled:
@@ -346,9 +338,6 @@ class MusicDownloader(_PluginBase):
             "max_size_gb": self._max_size_gb,
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
-            "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
         }
         result = await self._search_and_screen(
             kw, cfg, site_ids, artist=artist, album=album, keyword=keyword)
@@ -594,11 +583,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled,
             "notify_url": self._notify_url,
-            "check_interval": self._check_interval,
         }}
 
     def _refresh_dir_status(self):
@@ -632,51 +618,15 @@ class MusicDownloader(_PluginBase):
         return []
 
     # ------------------------------------------------------------------ #
-    # 后台服务：轮询下载完成 -> 通知
+    # 后台服务：按需使用，不做周期轮询
     # ------------------------------------------------------------------ #
     def get_service(self) -> List[Dict[str, Any]]:
-        if not self._enabled or not self._notify_enabled:
-            return []
-        return [{
-            "id": "download_poll",
-            "name": "音乐下载完成检测",
-            "trigger": "interval",
-            "func": self.__poll_downloads,
-            "kwargs": {"seconds": max(30, self._check_interval)},
-        }]
+        """按需下载，不注册周期检测服务。
 
-    def __poll_downloads(self):
-        try:
-            torrents = DownloadChain().list_torrents() or []
-        except Exception as err:
-            logger.error(f"【{self.plugin_name}】查询下载任务失败: {err}")
-            return
-        history = self.get_data("downloads") or []
-        changed = False
-        for item in history:
-            if item.get("status") != "downloading":
-                continue
-            match = next((t for t in torrents if t.get("hash") == item["hash"]), None)
-            if not match:
-                continue
-            state = match.get("state")
-            if state == "completed":
-                item["status"] = "completed"
-                item["finish_time"] = datetime.now().isoformat()
-                changed = True
-                self._notify(event="music.download.completed",
-                             title=item.get("title") or item["hash"],
-                             text=f"下载完成 | {item.get('save_path')}",
-                             payload=item)
-            elif state in ("error", "missingFiles"):
-                item["status"] = "failed"
-                item["finish_time"] = datetime.now().isoformat()
-                changed = True
-                self._notify(event="music.download.failed",
-                             title=item.get("title") or item["hash"],
-                             text=f"下载失败（{state}）", payload=item)
-        if changed:
-            self.save_data("downloads", history)
+        下载完成通知如需开启，后续可改为「下载器完成回调/Webhook」驱动，
+        避免定时轮询 DownloaderTorrent 造成日志噪音。
+        """
+        return []
 
     # ------------------------------------------------------------------ #
     # 通知
@@ -757,14 +707,11 @@ class MusicDownloader(_PluginBase):
                                                 "items": all_sites}}]},
                     ]},
                     {"component": "VRow", "content": [
-                        {"component": "VCol", "props": {"cols": 12, "md": 8},
+                        {"component": "VCol", "props": {"cols": 12, "md": 12},
                          "content": [{"component": "VSelect",
                                       "props": {"model": "sites_exclude", "multiple": True,
                                                 "chips": True, "label": "排除这些站点",
                                                 "items": all_sites}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
-                         "content": [{"component": "VTextField",
-                                      "props": {"model": "check_interval", "label": "完成检测间隔(秒)"}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 3},
@@ -826,11 +773,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
-            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
-            "check_interval": self._check_interval,
         }
 
     def get_page(self) -> Optional[List[dict]]:
