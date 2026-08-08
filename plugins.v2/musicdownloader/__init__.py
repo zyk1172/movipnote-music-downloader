@@ -150,7 +150,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.3.3"
+    plugin_version = "0.3.4"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -218,15 +218,9 @@ class MusicDownloader(_PluginBase):
             self._check_interval = 60
 
         # 校验音乐下载目录（MoviePilot 已配置下载目录或其子目录）
-        self._dir_valid = False
-        self._dir_error = ""
-        if self._music_dir:
-            try:
-                validate_download_save_path(self._music_dir)
-                self._dir_valid = True
-            except ValueError as err:
-                self._dir_error = str(err)
-                logger.error(f"【{self.plugin_name}】音乐下载目录校验失败: {err}")
+        self._refresh_dir_status()
+        if not self._dir_valid:
+            logger.error(f"【{self.plugin_name}】音乐下载目录校验失败: {self._dir_error}")
 
         self.update_config({
             "enabled": self._enabled, "music_dir": self._music_dir,
@@ -414,6 +408,7 @@ class MusicDownloader(_PluginBase):
                           index: int = None, magnet: str = None,
                           title: str = None, torrent_obj: dict = None) -> dict:
         """统一下载入口：ref(hash:id) / site_id+index / torrent 对象 / magnet"""
+        self._refresh_dir_status()
         if not self._dir_valid:
             return {"success": False,
                     "message": f"音乐下载目录未通过校验: {self._dir_error}"}
@@ -540,6 +535,7 @@ class MusicDownloader(_PluginBase):
         return {"success": bool(ok), "message": "通知已发送" if ok else "通知发送失败"}
 
     async def api_status(self) -> dict:
+        self._refresh_dir_status()
         return {"success": True, "data": {
             "enabled": self._enabled,
             "music_dir": self._music_dir,
@@ -557,6 +553,19 @@ class MusicDownloader(_PluginBase):
             "notify_url": self._notify_url,
             "check_interval": self._check_interval,
         }}
+
+    def _refresh_dir_status(self):
+        """每次请求时动态校验音乐下载目录（目录配置可能后加/修改，不依赖保存插件配置时的快照）"""
+        self._dir_valid = False
+        self._dir_error = ""
+        if not self._music_dir:
+            self._dir_error = "未配置音乐下载目录"
+            return
+        try:
+            validate_download_save_path(self._music_dir)
+            self._dir_valid = True
+        except ValueError as err:
+            self._dir_error = str(err)
 
     def _resolve_site_ids(self) -> List[int]:
         """生效的搜索站点：全部启用索引站点 或 include/exclude 交集"""
