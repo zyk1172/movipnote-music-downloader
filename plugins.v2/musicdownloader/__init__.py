@@ -131,6 +131,7 @@ if _HAS_AGENT_TOOLS:
         index: Optional[int] = Field(None, description="搜索结果序号（从1开始）")
         magnet: Optional[str] = Field(None, description="磁力链（与 ref/index 二选一）")
         title: Optional[str] = Field(None, description="种子标题（可选）")
+        max_size_gb: Optional[float] = Field(None, description="下载体积上限(GB)，超过则拒绝（单曲自动下载建议传）")
 
     class MusicDownloadTool(MoviePilotTool):
         name: str = "music_download"
@@ -143,14 +144,15 @@ if _HAS_AGENT_TOOLS:
 
         async def run(self, ref: str = None, site_id: int = None,
                       index: int = None, magnet: str = None,
-                      title: str = None, **kwargs) -> str:
+                      title: str = None, max_size_gb: float = None,
+                      **kwargs) -> str:
             import json
             inst = _get_instance()
             if not inst:
                 return "插件未启用"
             result = await inst.do_download(
                 ref=ref, site_id=site_id, index=index,
-                magnet=magnet, title=title)
+                magnet=magnet, title=title, size_limit_gb=max_size_gb)
             return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -162,7 +164,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.9"
+    plugin_version = "0.5.0"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -446,13 +448,17 @@ class MusicDownloader(_PluginBase):
                 artist_only, cfg, site_ids, artist=artist, album=album,
                 keyword=keyword, album_aliases=album_aliases)
 
-        # 单曲未命中 -> 通过 MusicBrainz 解析所属专辑，按专辑重搜（大小受 max_size_gb 限制）
+        # 单曲未命中 -> 通过 iTunes 解析所属专辑，按专辑重搜（大小不受限）
+        self._last_fallback_tried = False
+        self._last_fallback_resolved = None
         self._last_fallback_album = None
         if (self._single_fallback_album and artist and album
                 and not result.get("album_matched_any")):
+            self._last_fallback_tried = True
             album_title = await asyncio.to_thread(
                 self._resolve_album, artist, album)
             if album_title:
+                self._last_fallback_resolved = album_title
                 kw_album = build_keyword(keyword=album_title, artist=artist)
                 result = await self._search_and_screen(
                     kw_album, cfg_album, site_ids, artist=artist,
@@ -496,6 +502,8 @@ class MusicDownloader(_PluginBase):
             "searched_sites": [s.get("name") for s in self.api_site_list()],
             "total": len(results),
             "album_matched_any": any(r.get("album_matched") for r in results),
+            "fallback_tried": self._last_fallback_tried,
+            "fallback_resolved": self._last_fallback_resolved,
             "fallback_album": self._last_fallback_album,
             "kind": "single" if single_mode else "album",
             "size_limit_applied": bool(single_mode and self._max_size_gb > 0),
@@ -545,7 +553,8 @@ class MusicDownloader(_PluginBase):
 
     async def do_download(self, ref: str = None, site_id: int = None,
                           index: int = None, magnet: str = None,
-                          title: str = None, torrent_obj: dict = None) -> dict:
+                          title: str = None, torrent_obj: dict = None,
+                          size_limit_gb: Optional[float] = None) -> dict:
         """统一下载入口：ref(hash:id) / site_id+index / torrent 对象 / magnet"""
         self._refresh_dir_status()
         if not self._dir_valid:
@@ -575,6 +584,16 @@ class MusicDownloader(_PluginBase):
                 return {"success": False, "message": "缺少 title/enclosure"}
 
         if torrent:
+            # 下载前二次体积闸门：单曲自动下载时，超过 size_limit_gb 直接拒绝
+            if size_limit_gb and torrent.size and float(torrent.size) > float(size_limit_gb) * (1024 ** 3):
+                self._push_result("download_failed", {
+                    "title": torrent.title or title or "",
+                    "size": torrent.size, "size_text": fmt_size(torrent.size),
+                    "reason": f"超过大小上限 {size_limit_gb}GB",
+                }, f"下载失败：{torrent.title or title or ''}",
+                   f"资源 {fmt_size(torrent.size)} 超过大小上限 {size_limit_gb}GB")
+                return {"success": False,
+                        "message": f"资源 {fmt_size(torrent.size)} 超过大小上限 {size_limit_gb}GB，已拒绝下载"}
             # 音乐无影视媒体信息：构造最小 MediaInfo（type=未知），避免 download_single
             # 在登记下载历史等环节因 mediainfo=None 崩溃
             media = MediaInfo()
@@ -695,6 +714,7 @@ class MusicDownloader(_PluginBase):
             ref=payload.get("ref"), site_id=payload.get("site_id"),
             index=payload.get("index"), magnet=None,
             title=payload.get("title"), torrent_obj=payload.get("torrent"),
+            size_limit_gb=payload.get("max_size_gb"),
         )
         return result
 

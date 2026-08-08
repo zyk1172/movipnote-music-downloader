@@ -3,11 +3,12 @@
     "name": "音乐下载",
     "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
     "labels": "音乐,下载",
-    "version": "0.4.9",
+    "version": "0.5.0",
     "icon": "icon.png",
     "author": "zyk1172",
     "level": 1,
     "history": {
+      "v0.5.0": "下载前二次体积闸门(max_size_gb)：单曲自动下载超限直接拒绝；search响应新增fallback_tried/fallback_resolved（降级透明化）",
       "v0.4.9": "/tasks与/history新增live_available：下载器查询失败时明确提示改用/on_complete回调判断完成",
       "v0.4.8": "新增/test测试接口（供APP测试按钮）；max_size_gb仅约束单曲（专辑/合集不限）；接口全面返回体积信息(size/size_text)",
       "v0.4.7": "单曲降级专辑改用iTunes Search API解析（MusicBrainz限流且解析不准）；实测5首代表单曲均命中正确专辑",
