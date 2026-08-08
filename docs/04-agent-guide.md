@@ -1,6 +1,17 @@
+# Agent 使用指南（音乐下载插件，v0.5.7）
+
+> 接口字段与完整契约以 `03-agent-contract.md` 为准；本文讲工作流、决策与排障。
+
 # Agent 使用指南：音乐下载插件（v0.4.3）
 
 本文面向「音乐 APP 内嵌小 Agent」的开发者，讲清楚：怎么调用、怎么决策、结果怎么回来。
+
+## 0. MoviePilot 内置智能助手怎么用本插件
+
+- **工具**：插件注册的 `music_search` / `music_download` 会自动出现在智能助手工具列表，描述内已内置决策规则；
+- **斜杠命令**：`/音乐下载 <艺人> <专辑>`，助手可用 `run_slash_command` 直接触发整条流程（搜索→决策→下载→回复）；
+- **Agent Skills（推荐）**：把插件仓库 `skill/music-downloader/` 目录复制到 MoviePilot 的 skills 目录
+  （Docker 内 `/app/skills/music-downloader/`，或智能助手用户 skills 目录），助手即会加载《音乐下载插件使用说明》并严格按决策规则执行。
 
 ## 1. 两种接入方式（二选一或都接）
 
@@ -68,7 +79,7 @@ Base URL：`http://<MovipNote-Host>:3000/api/v1/plugin/MusicDownloader`
 2. **选型优先级**：`album_matched=true` → `quality`（无损>有损）→ `relevance` → `seeders`。
 3. **失败重试**：`/download` 返回 `下载种子内容为空`/失败时，换该查询的**下一个候选 ref** 重试 1-2 次。
 4. **中文专辑**：优先传 `album_aliases`（英文名），如 `魔杰座→Capricorn`、`第二天堂→The Second Heaven`。
-5. **单曲**：PT 站按专辑建种，单曲名通常搜不到 → 插件会自动「退艺人搜索」；此时 `album_matched_any` 一般为 false，**必须让用户从候选里挑**。
+5. **单曲**：PT 站按专辑建种，单曲名通常搜不到 → 插件会自动「退艺人搜索」，并尝试**经 iTunes 解析所属专辑后按专辑重搜**（`single_fallback_album`，默认开）；重搜后的专辑命中结果**受 `max_size_gb` 大小上限约束**，超限不下载；仍无命中则展示候选由用户选择。
 
 ## 5. 即时“下载成功”推送（可选，推荐）
 
@@ -86,10 +97,13 @@ Base URL：`http://<MovipNote-Host>:3000/api/v1/plugin/MusicDownloader`
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/search` | `{keyword?, artist?, album?, album_aliases?, year?, limit?, prefer_lossless?, min_seeders?}` |
+| POST | `/test` | 测试插件（启用/目录/站点/下载器/元数据服务），供 APP 测试按钮 |
+| POST | `/search` | `{keyword?, artist?, album?, album_aliases?, kind?, year?, limit?, prefer_lossless?, min_seeders?}` |
 | POST | `/download` | `{ref}` 或 `{site_id,index}` 或 `{torrent:{...}}` |
 | POST | `/magnet` | `{magnet, title?}` |
 | GET | `/tasks?status=` | 实时任务（含下载器 state/progress） |
+| GET | `/history` | 下载历史（含实时状态） |
+| POST | `/history/clear` | 清空下载历史 |
 | GET | `/sites` | 生效搜索站点 |
 | GET | `/status` | 插件状态（目录校验、站点、筛查配置） |
 | POST | `/notify/test` | 测试结果推送 |

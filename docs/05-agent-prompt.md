@@ -31,7 +31,8 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/search` | 搜索+筛查，返回候选（含 `album_matched`/`relevance`/`ref`） |
+| POST | `/test` | 测试插件（启用/目录/站点/下载器/元数据服务），供 APP 测试按钮逐项展示 |
+| POST | `/search` | 搜索+筛查，返回候选（含 `album_matched`/`relevance`/`size`/`ref`）；`kind=single/album/auto` |
 | POST | `/download` | 按 `ref`（或 `site_id+index` / `torrent` 对象）加入下载 |
 | POST | `/magnet` | 磁力链下载 |
 | GET | `/tasks?status=` | 实时任务（含下载器 `state/progress/dlspeed`） |
@@ -77,7 +78,7 @@
       "audio_format": "FLAC",
       "quality": 90, "quality_label": "无损",
       "relevance": 70, "album_matched": true,
-      "size_text": "303.2 MB", "seeders": 34,
+      "size": 317860175, "size_text": "303.2 MB", "seeders": 34,
       "pubdate": "2021-08-05 20:24:32",
       "enclosure": "https://..."
     }
@@ -90,21 +91,24 @@
 - `quality`：100 无损-高规格 / 90 无损 / 60 有损-高质量 / 40 有损 / 30 未知
 - `relevance`：与「艺人/专辑/关键词」的相关度 0-100（艺人+30，专辑/别名+40）
 - `album_matched`：专辑名或别名是否命中标题；`album_matched_any` 为整批是否命中
+- `size`/`size_text`：体积（字节/可读）；`size_limit_gb`：本次生效上限（单曲→`max_size_gb`，合集/降级→`album_max_size_gb`）
 - `ref`：下载引用，格式 `hash:id`，**仅在本次搜索缓存内有效**，必须用本批结果里的 ref 下载
 
 ## 五、决策规则（硬性要求，防止下错专辑）
 
 1. **`album_matched_any=false` → 禁止自动下载**。只把候选展示给用户挑选（或提示用户补充专辑英文别名再搜）。实测中中文专辑（魔杰座=Capricorn、黑白灰、第二天堂、唱游）在 PT 站用英文/别名建种，标题对不上=大概率下错。
 2. **`album_matched_any=true`** → 在 `album_matched=true` 的条目中选：`quality` 最高 → 相同则 `relevance` 高 → 相同则 `seeders` 高。
-3. **单曲**：PT 站按专辑/艺人建种，单曲名通常搜不到；插件会自动「退艺人搜索」，此时 `album_matched_any` 一般为 false，**必须让用户从候选里挑**。
+3. **单曲**：PT 站按专辑/艺人建种，单曲名通常搜不到；插件会自动「退艺人搜索」并**经 iTunes 解析所属专辑后按专辑重搜**（`single_fallback_album` 默认开）。重搜后的专辑候选**必须满足 `max_size_gb` 大小上限**（超限不下载），命中才可自动下载；仍无命中则展示候选由用户选择。
 4. **失败重试**：`/download` 返回失败（如 `下载种子内容为空`）时，换该查询的**下一个候选 ref** 重试 1-2 次。
 
 ## 六、下载接口详解
 
 `POST /download`
 ```json
-{ "ref": "77598c7:3" }
+{ "ref": "77598c7:3", "max_size_gb": 5.0, "verify_song": "Poker Face", "verify_artist": "Lady Gaga" }
 ```
+> - **`max_size_gb`**：把 search 返回的 `size_limit_gb` 原样传回；单曲超单曲上限、合集超合集体积上限都会被拒绝。
+> - **`verify_song`/`verify_artist`**（单曲自动下载必传）：下载前解析种子文件清单，确认真的包含目标歌曲；不含（如合集但无该曲）返回 `content_verified=false` 并拒绝；整轨单文件返回 `content_verified=null`（无法逐曲校验，放行）。
 或 `{ "site_id": 4, "index": 3 }` 或 `{ "torrent": { "title": "...", "enclosure": "..." } }`
 
 成功响应：
@@ -163,6 +167,7 @@
 | `引用已失效，请重新搜索` | 搜索缓存被覆盖/过期 | 重新 `/search` |
 | `加入下载失败: 下载种子内容为空` | 站点取种偶发失败 | 换下一候选 ref 重试 1-2 次 |
 | `没有可搜索的站点` | 未启用索引站点 | 提示到 MoviePilot 站点设置 |
+| `live_available=false` | MoviePilot→qb 查询失败/超时 | 检查 qb 运行与下载器连接；完成判定改用 qb「完成后运行外部程序」回调 `/on_complete` |
 | 网络超时 | NAS 离线/网络抖动 | 指数退避重试 |
 
 ## 十、UI 建议（APP 侧）
