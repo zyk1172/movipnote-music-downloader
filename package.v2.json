@@ -3,11 +3,12 @@
     "name": "音乐下载",
     "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
     "labels": "音乐,下载",
-    "version": "0.4.3",
+    "version": "0.4.4",
     "icon": "icon.png",
     "author": "zyk1172",
     "level": 1,
     "history": {
+      "v0.4.4": "新增下载历史页面（插件详情页）与 /history、/history/clear 管理接口，含下载器实时状态",
       "v0.4.3": "结果推送模型：no_resource/search_ready/download_added/download_completed/download_failed 推送给Agent；/tasks实时状态；新增/on_complete完成回调；Agent使用指南",
       "v0.4.2": "依据10组实测：新增album_matched标志与album_aliases别名参数，专辑未命中时禁止自动下载（防下错专辑）",
       "v0.4.1": "移除周期下载完成轮询（list_torrents返回Pydantic模型导致每30-60s报错刷日志）；插件改为纯按需使用",

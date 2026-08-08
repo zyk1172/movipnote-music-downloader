@@ -152,7 +152,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.3"
+    plugin_version = "0.4.4"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -275,6 +275,10 @@ class MusicDownloader(_PluginBase):
             {"path": "/on_complete", "endpoint": self.api_on_complete, "methods": ["GET"],
              "summary": "下载完成回调",
              "description": "qBittorrent外部程序回调：?hash=%I&name=%N"},
+            {"path": "/history", "endpoint": self.api_history, "methods": ["GET"],
+             "summary": "下载历史", "description": "下载历史记录（含下载器实时状态）"},
+            {"path": "/history/clear", "endpoint": self.api_history_clear, "methods": ["POST"],
+             "summary": "清空下载历史"},
         ]
         auth_dep = Depends(_make_auth_check(self))
         for item in api_list:
@@ -643,6 +647,15 @@ class MusicDownloader(_PluginBase):
             tasks = [t for t in tasks if t["status"] == status]
         return {"success": True, "data": {"tasks": tasks}}
 
+    async def api_history(self) -> dict:
+        """下载历史（含实时状态）"""
+        return {"success": True, "data": {"tasks": self._history_rows()}}
+
+    async def api_history_clear(self, payload: dict = Body(default_factory=dict)) -> dict:
+        """清空下载历史"""
+        self.del_data("downloads")
+        return {"success": True, "message": "下载历史已清空"}
+
     async def api_on_complete(self, hash: str = None, name: str = None) -> dict:
         """下载完成回调（qBittorrent 外部程序）：GET ?hash=%I&name=%N"""
         if not hash:
@@ -914,8 +927,87 @@ class MusicDownloader(_PluginBase):
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         }
 
+    def _history_rows(self) -> List[dict]:
+        """下载历史 + 下载器实时状态（属性安全）"""
+        history = self.get_data("downloads") or []
+        live: Dict[str, dict] = {}
+        try:
+            torrents = DownloadChain().list_torrents(include_all_tags=True) or []
+            live = {t.hash: self._torrent_to_dict(t)
+                    for t in torrents if t.hash}
+        except Exception as err:
+            logger.warn(f"【{self.plugin_name}】获取下载器实时状态失败: {err}")
+        status_map = {"downloading": "下载中", "completed": "已完成",
+                      "failed": "失败", "paused": "暂停"}
+        rows = []
+        for item in reversed(history):
+            lt = live.get(item.get("hash")) or {}
+            st = item.get("status") or ""
+            progress = lt.get("progress")
+            rows.append({
+                "title": item.get("title") or "",
+                "site": item.get("site") or "",
+                "status": status_map.get(st, st),
+                "state": lt.get("state") or "",
+                "progress": f"{float(progress):.1f}%" if progress is not None else "",
+                "save_path": lt.get("save_path") or item.get("save_path") or "",
+                "create_time": item.get("create_time") or "",
+                "finish_time": item.get("finish_time") or "",
+                "hash": str(item.get("hash") or "")[:12],
+            })
+        return rows
+
     def get_page(self) -> Optional[List[dict]]:
-        return None
+        """插件详情页：下载历史记录 + 状态统计"""
+        rows = self._history_rows()
+        if not rows:
+            return [{
+                "component": "div",
+                "text": "暂无下载记录",
+                "props": {"class": "text-center mt-4"},
+            }]
+        counts = {"下载中": 0, "已完成": 0, "失败": 0, "暂停": 0}
+        for r in rows:
+            if r["status"] in counts:
+                counts[r["status"]] += 1
+        stat_cards = [
+            {
+                "component": "VCol",
+                "props": {"cols": 6, "md": 3},
+                "content": [
+                    {"component": "div",
+                     "props": {"class": "text-sm text-medium-emphasis"},
+                     "text": label},
+                    {"component": "div",
+                     "props": {"class": "text-h6"},
+                     "text": str(value)},
+                ],
+            }
+            for label, value in counts.items()
+        ]
+        return [
+            {"component": "VRow", "content": stat_cards},
+            {"component": "VDataTableVirtual",
+             "props": {
+                 "class": "text-sm",
+                 "headers": [
+                     {"title": "标题", "key": "title", "sortable": False},
+                     {"title": "站点", "key": "site", "sortable": True},
+                     {"title": "状态", "key": "status", "sortable": True},
+                     {"title": "进度", "key": "progress", "sortable": False},
+                     {"title": "保存路径", "key": "save_path", "sortable": False},
+                     {"title": "创建时间", "key": "create_time", "sortable": True},
+                     {"title": "完成时间", "key": "finish_time", "sortable": True},
+                     {"title": "Hash", "key": "hash", "sortable": False},
+                 ],
+                 "items": rows,
+                 "height": "30rem",
+                 "density": "compact",
+                 "fixed-header": True,
+                 "hide-no-data": True,
+                 "hover": True,
+             }},
+        ]
 
     def stop_service(self):
         """停止插件（框架调用）"""
