@@ -170,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.4"
+    plugin_version = "0.5.5"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -370,6 +370,8 @@ class MusicDownloader(_PluginBase):
              "summary": "下载历史", "description": "下载历史记录（含下载器实时状态）"},
             {"path": "/history/clear", "endpoint": self.api_history_clear, "methods": ["POST"],
              "summary": "清空下载历史"},
+            {"path": "/history/remove", "endpoint": self.api_history_remove, "methods": ["POST"],
+             "summary": "移除单条下载历史", "description": "body: {hash}"},
         ]
         auth_dep = Depends(_make_auth_check(self))
         for item in api_list:
@@ -778,7 +780,8 @@ class MusicDownloader(_PluginBase):
     async def api_tasks(self, status: Optional[str] = None) -> dict:
         """查询任务：合并插件历史 + 下载器实时状态；检测到完成/暂停时更新并推送结果"""
         history = self.get_data("downloads") or []
-        live_raw = self._live_torrents()
+        hashes = [h.get("hash") for h in history if h.get("hash")]
+        live_raw = self._live_torrents(hashs=hashes)
         live = live_raw or {}
         live_available = live_raw is not None
 
@@ -845,7 +848,7 @@ class MusicDownloader(_PluginBase):
         sites = self.api_site_list()
         checks.append({"name": "搜索站点", "ok": len(sites) > 0,
                        "detail": f"{len(sites)} 个" if sites else "未配置"})
-        live = self._live_torrents(timeout=3)
+        live = self._live_torrents(timeout=5, hashs=["__probe__"])
         checks.append({"name": "下载器连接", "ok": live is not None,
                        "detail": "可达" if live is not None else "超时/不可达"})
         meta_ok = await asyncio.to_thread(self._test_itunes)
@@ -859,7 +862,9 @@ class MusicDownloader(_PluginBase):
 
     async def api_history(self) -> dict:
         """下载历史（含实时状态）；live_available=false 表示下载器查询失败，需用 /on_complete 判断完成"""
-        live = self._live_torrents()
+        history = self.get_data("downloads") or []
+        hashes = [h.get("hash") for h in history if h.get("hash")]
+        live = self._live_torrents(hashs=hashes)
         return {"success": True, "data": {
             "live_available": live is not None,
             "tasks": self._history_rows(live=live),
@@ -869,6 +874,16 @@ class MusicDownloader(_PluginBase):
         """清空下载历史"""
         self.del_data("downloads")
         return {"success": True, "message": "下载历史已清空"}
+
+    async def api_history_remove(self, payload: dict = Body(default_factory=dict)) -> dict:
+        """移除单条下载历史（如已从下载器删除的孤儿记录）"""
+        h = str(payload.get("hash") or "").strip()
+        if not h:
+            return {"success": False, "message": "缺少 hash"}
+        history = self.get_data("downloads") or []
+        new_history = [x for x in history if x.get("hash") != h]
+        self.save_data("downloads", new_history)
+        return {"success": True, "message": f"已移除记录 {h[:12]}"}
 
     async def api_on_complete(self, hash: str = None, name: str = None) -> dict:
         """下载完成回调（qBittorrent 外部程序）：GET ?hash=%I&name=%N"""
@@ -1233,16 +1248,22 @@ class MusicDownloader(_PluginBase):
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         }
 
-    def _live_torrents(self, timeout: float = 3.0) -> Optional[Dict[str, dict]]:
-        """查询下载器实时任务（线程+超时），防止下载器挂起拖垮 MoviePilot 事件循环。
+    def _live_torrents(self, timeout: float = 8.0,
+                       hashs: Optional[list] = None) -> Optional[Dict[str, dict]]:
+        """按指定 hash 精准查询下载器实时任务（线程+超时），避免全量查询拖垮（994 任务需 60s+）。
 
-        成功返回 {hash: {...}}（可能为空）；失败/超时返回 None（调用方回退为仅历史）。
+        :param timeout: 查询超时（秒），线程内执行不阻塞事件循环
+        :param hashs: 只查这些 hash（插件历史里的任务），为空则不查询
+        :return: 成功 {hash: {...}}（可能为空）；失败/超时返回 None
         """
+        if not hashs:
+            return {}
         from concurrent.futures import ThreadPoolExecutor
 
         def _query() -> Dict[str, dict]:
             try:
-                torrents = DownloadChain().list_torrents(include_all_tags=True) or []
+                torrents = DownloadChain().list_torrents(hashs=hashs,
+                                                         include_all_tags=True) or []
                 return {t.hash: self._torrent_to_dict(t)
                         for t in torrents if t.hash}
             except Exception as err:
@@ -1262,7 +1283,8 @@ class MusicDownloader(_PluginBase):
         """下载历史 + 下载器实时状态（属性安全）"""
         history = self.get_data("downloads") or []
         if live is None:
-            live = self._live_torrents() or {}
+            hashes = [h.get("hash") for h in history if h.get("hash")]
+            live = self._live_torrents(hashs=hashes) or {}
         status_map = {"downloading": "下载中", "completed": "已完成",
                       "failed": "失败", "paused": "暂停"}
         rows = []

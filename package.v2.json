@@ -3,11 +3,12 @@
     "name": "音乐下载",
     "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
     "labels": "音乐,下载",
-    "version": "0.5.4",
+    "version": "0.5.5",
     "icon": "icon.png",
     "author": "zyk1172",
     "level": 1,
     "history": {
+      "v0.5.5": "实时查询按历史hash精准查(14条而非全量994条，毫秒级)；超时提至8s；/test用探测hash真实连通；新增/history/remove移除孤儿记录",
       "v0.5.4": "修复：单曲降级到合集后，下载上限改用合集体积上限(album_max_size_gb)，响应size_limit_gb随之更新",
       "v0.5.3": "修复实测3个bug：album_matched_any判断(此前降级恒触发/fallback_album恒空)、匹配标点归一(I, II & III)、iTunes跳过精选合集(Greatest Hits等)",
       "v0.5.2": "曲目级内容校验：下载前解析种子文件清单，确认包含目标歌曲；标题命中但内容不含(如合集)直接拒绝；整轨单文件放行并标注",
