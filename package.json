@@ -1,0 +1,16 @@
+{
+  "MusicDownloader": {
+    "name": "音乐下载",
+    "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
+    "labels": "音乐,下载",
+    "version": "0.3.0",
+    "icon": "icon.png",
+    "author": "you@example.com",
+    "level": 1,
+    "history": {
+      "v0.3.0": "接入官方hash:id引用机制；筛查引擎抽离为screener.py并附校准工具与回归测试",
+      "v0.2.0": "全站点搜索+音乐/影视判别+无损优先排序；移除音乐站限制",
+      "v0.1.0": "初版：关键词搜索 + 下载到音乐目录 + 通知"
+    }
+  }
+}
