@@ -170,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.2"
+    plugin_version = "0.5.3"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -469,12 +469,15 @@ class MusicDownloader(_PluginBase):
                 artist_only, cfg, site_ids, artist=artist, album=album,
                 keyword=keyword, album_aliases=album_aliases)
 
-        # 单曲未命中 -> 通过 iTunes 解析所属专辑，按专辑重搜（大小不受限）
+        # 单曲未命中 -> 通过 iTunes 解析所属专辑，按专辑重搜（走合集体积上限）
+        def _matched_any(res: dict) -> bool:
+            return any(r.get("album_matched") for r in (res or {}).get("results") or [])
+
         self._last_fallback_tried = False
         self._last_fallback_resolved = None
         self._last_fallback_album = None
         if (self._single_fallback_album and artist and album
-                and not result.get("album_matched_any")):
+                and not _matched_any(result)):
             self._last_fallback_tried = True
             album_title = await asyncio.to_thread(
                 self._resolve_album, artist, album)
@@ -485,11 +488,11 @@ class MusicDownloader(_PluginBase):
                     kw_album, cfg_album, site_ids, artist=artist,
                     album=album_title, keyword=album_title,
                     album_aliases=[album_title])
-                if result.get("album_matched_any"):
+                if _matched_any(result):
                     self._last_fallback_album = album_title
                     logger.info(
-                        "【%s】单曲「%s」未命中，降级为专辑「%s」重搜（大小上限 %.1fGB）",
-                        self.plugin_name, album, album_title, self._max_size_gb)
+                        "【%s】单曲「%s」未命中，降级为专辑「%s」重搜（合集体积上限 %.1fGB）",
+                        self.plugin_name, album, album_title, self._album_max_size_gb)
 
         self._last_kw = kw
         self._last_dropped = result["dropped_video"] + result["dropped_uncertain"]
@@ -980,17 +983,22 @@ class MusicDownloader(_PluginBase):
                 return None
             data = resp.json()
             results = data.get("results") or []
-            skip = ("live", "remix", "karaoke", "demo", "instrumental",
-                    "a cappella", "dj mix")
+            skip_track = ("live", "remix", "karaoke", "demo", "instrumental",
+                          "a cappella", "dj mix")
+            skip_collection = ("greatest", "hits", "best of", "collection",
+                               "compilation", "karaoke", "live", "essential",
+                               "ultimate", "now that's what")
             for r in results:
                 if r.get("wrapperType") != "track":
                     continue
                 title = str(r.get("trackName") or "").lower()
-                if any(k in title for k in skip):
+                if any(k in title for k in skip_track):
                     continue
                 album = (r.get("collectionName") or "").strip()
-                if album:
-                    return album
+                album_low = album.lower()
+                if not album or any(k in album_low for k in skip_collection):
+                    continue
+                return album
             for r in results:
                 if r.get("wrapperType") == "track" and (r.get("collectionName") or "").strip():
                     return r["collectionName"].strip()

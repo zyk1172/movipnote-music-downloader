@@ -140,12 +140,17 @@ def build_keyword(keyword: Optional[str] = None, artist: Optional[str] = None,
     return kw
 
 
+def _match_norm(x: str) -> str:
+    """匹配用归一化：小写 + 去标点（I, II & III 与 I II & III 视为相同）"""
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(x).lower())
+
+
 def _album_hit(t: Dict[str, Any], album: Optional[str],
               album_aliases: Optional[List[str]] = None) -> bool:
-    """专辑是否命中：专辑名或任一别名出现在标题/副标题中"""
-    title_desc = norm(f"{t.get('title') or ''} {t.get('description') or ''}")
+    """专辑是否命中：专辑名或任一别名出现在标题/副标题中（标点容错）"""
+    title_desc = _match_norm(f"{t.get('title') or ''} {t.get('description') or ''}")
     candidates = [a for a in ([album] + list(album_aliases or [])) if a and str(a).strip()]
-    return any(norm(str(c)).strip() and norm(str(c)).strip() in title_desc for c in candidates)
+    return any(_match_norm(str(c)) and _match_norm(str(c)) in title_desc for c in candidates)
 
 
 def relevance(t: Dict[str, Any], artist: Optional[str] = None,
@@ -157,14 +162,14 @@ def relevance(t: Dict[str, Any], artist: Optional[str] = None,
       - 艺人命中 +30，专辑（含别名）命中 +40，关键词命中 +40（可叠加，上限 100）
       - 无搜索词时返回 50（中性）
     """
-    title_desc = norm(f"{t.get('title') or ''} {t.get('description') or ''}")
+    title_desc = _match_norm(f"{t.get('title') or ''} {t.get('description') or ''}")
     terms = []
     if artist and str(artist).strip():
-        terms.append((30, norm(str(artist).strip())))
+        terms.append((30, _match_norm(str(artist).strip())))
     if _album_hit(t, album, album_aliases):
         terms.append((40, "__album__"))
     if keyword and str(keyword).strip():
-        kw = norm(str(keyword).strip())
+        kw = _match_norm(str(keyword).strip())
         if kw not in [v for _, v in terms]:
             terms.append((40, kw))
     if not terms:
