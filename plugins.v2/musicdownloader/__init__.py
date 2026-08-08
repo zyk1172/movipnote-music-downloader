@@ -170,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.3"
+    plugin_version = "0.5.4"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -493,6 +493,10 @@ class MusicDownloader(_PluginBase):
                     logger.info(
                         "【%s】单曲「%s」未命中，降级为专辑「%s」重搜（合集体积上限 %.1fGB）",
                         self.plugin_name, album, album_title, self._album_max_size_gb)
+
+        # 单曲降级到合集后，本次下载按合集体积上限执行
+        if self._last_fallback_album:
+            size_limit = album_size
 
         self._last_kw = kw
         self._last_dropped = result["dropped_video"] + result["dropped_uncertain"]
