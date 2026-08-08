@@ -17,7 +17,7 @@ metadata:
 
 ## 可用工具
 
-- `music_search`：搜索+筛查音乐资源（艺人/专辑/单曲），返回候选（含 `quality`/`relevance`/`album_matched`/`ref`）。
+- `music_search`：搜索+筛查音乐资源（艺人/专辑/单曲），返回候选（含 `quality`/`relevance`/`album_matched`/`size`/`ref`）；`kind=single/album/auto` 控制大小上限是否生效。
 - `music_download`：按 `ref` 把音乐加入 MoviePilot 下载器，保存到已配置的音乐下载目录。
 - 斜杠命令：`/音乐下载 <艺人> <专辑>`（可经 `run_slash_command` 触发整条流程）。
 

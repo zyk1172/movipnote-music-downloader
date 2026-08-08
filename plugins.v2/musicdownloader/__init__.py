@@ -96,6 +96,7 @@ if _HAS_AGENT_TOOLS:
         artist: Optional[str] = Field(None, description="艺人名，如：周杰伦")
         album: Optional[str] = Field(None, description="专辑名，如：叶惠美")
         album_aliases: Optional[List[str]] = Field(None, description="专辑别名/英文名列表，如 Capricorn")
+        kind: Optional[str] = Field(None, description="single=单曲(大小上限生效) / album=专辑合集(不限大小) / auto=自动")
         year: Optional[int] = Field(None, description="年份（可选）")
         limit: Optional[int] = Field(10, description="返回条数上限")
         prefer_lossless: Optional[bool] = Field(True, description="无损优先")
@@ -111,7 +112,7 @@ if _HAS_AGENT_TOOLS:
 
         async def run(self, keyword: str = None, artist: str = None,
                       album: str = None, album_aliases: Optional[List[str]] = None,
-                      year: int = None, limit: int = 10,
+                      kind: str = None, year: int = None, limit: int = 10,
                       prefer_lossless: bool = True, **kwargs) -> str:
             import json
             inst = _get_instance()
@@ -120,7 +121,7 @@ if _HAS_AGENT_TOOLS:
             data = await inst.do_search(
                 keyword=keyword, artist=artist, album=album, year=year,
                 limit=limit, prefer_lossless=prefer_lossless,
-                album_aliases=album_aliases,
+                album_aliases=album_aliases, kind=kind,
             )
             return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -161,7 +162,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.7"
+    plugin_version = "0.4.8"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -343,6 +344,8 @@ class MusicDownloader(_PluginBase):
             {"path": "/on_complete", "endpoint": self.api_on_complete, "methods": ["GET"],
              "summary": "下载完成回调",
              "description": "qBittorrent外部程序回调：?hash=%I&name=%N"},
+            {"path": "/test", "endpoint": self.api_test, "methods": ["POST"],
+             "summary": "测试插件", "description": "供APP测试按钮：检查启用/目录/站点/下载器/元数据服务"},
             {"path": "/history", "endpoint": self.api_history, "methods": ["GET"],
              "summary": "下载历史", "description": "下载历史记录（含下载器实时状态）"},
             {"path": "/history/clear", "endpoint": self.api_history_clear, "methods": ["POST"],
@@ -399,7 +402,8 @@ class MusicDownloader(_PluginBase):
                         limit: int = 10,
                         prefer_lossless: Optional[bool] = None,
                         min_seeders: Optional[int] = None,
-                        album_aliases: Optional[List[str]] = None) -> dict:
+                        album_aliases: Optional[List[str]] = None,
+                        kind: Optional[str] = None) -> dict:
         """全站点关键词搜索 -> 音乐/影视判别 -> 无损优先+相关度 -> 排序
 
         结果写入 MoviePilot 共享缓存（__search_result__），与官方 Agent 工具
@@ -414,14 +418,20 @@ class MusicDownloader(_PluginBase):
             logger.warn("【%s】没有可搜索的站点", self.plugin_name)
             return {"keyword": kw, "total": 0, "results": []}
 
+        # kind: single=单曲（大小上限生效）/ album=专辑合集（不限大小）/ auto=自动
+        kind = (kind or "auto").strip().lower()
+        single_mode = kind == "single" or (kind == "auto" and bool(album))
+        size_limit = self._max_size_gb if single_mode else 0.0
+
         cfg = {
             "require_music": self._require_music,
             "prefer_lossless": self._prefer_lossless if prefer_lossless is None else bool(prefer_lossless),
             "min_seeders": self._min_seeders if min_seeders is None else max(0, int(min_seeders)),
-            "max_size_gb": self._max_size_gb,
+            "max_size_gb": size_limit,
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
         }
+        cfg_album = dict(cfg, max_size_gb=0.0)  # 专辑/合集不受大小上限约束
         result = await self._search_and_screen(
             kw, cfg, site_ids, artist=artist, album=album, keyword=keyword,
             album_aliases=album_aliases)
@@ -445,7 +455,7 @@ class MusicDownloader(_PluginBase):
             if album_title:
                 kw_album = build_keyword(keyword=album_title, artist=artist)
                 result = await self._search_and_screen(
-                    kw_album, cfg, site_ids, artist=artist,
+                    kw_album, cfg_album, site_ids, artist=artist,
                     album=album_title, keyword=album_title,
                     album_aliases=[album_title])
                 if result.get("album_matched_any"):
@@ -473,6 +483,7 @@ class MusicDownloader(_PluginBase):
                 "quality_label": item["quality_label"],
                 "relevance": item["relevance"],
                 "album_matched": item.get("album_matched", False),
+                "size": item.get("size") or 0,
                 "size_text": fmt_size(item.get("size")),
                 "seeders": item["seeders"],
                 "grabs": item["grabs"],
@@ -486,6 +497,8 @@ class MusicDownloader(_PluginBase):
             "total": len(results),
             "album_matched_any": any(r.get("album_matched") for r in results),
             "fallback_album": self._last_fallback_album,
+            "kind": "single" if single_mode else "album",
+            "size_limit_applied": bool(single_mode and self._max_size_gb > 0),
             "dropped_video": result["dropped_video"],
             "dropped_uncertain": result["dropped_uncertain"],
             "results": results,
@@ -594,17 +607,21 @@ class MusicDownloader(_PluginBase):
                 return {"success": False, "message": f"加入下载失败: {err}"}
             self._record(did=did, title=torrent.title or title or "",
                          site=torrent.site_name or "", save_path=self._music_dir,
-                         status="downloading")
+                         status="downloading", size=torrent.size or 0)
             self._push_result("download_added", {
                 "hash": did,
                 "title": torrent.title or title or "音乐下载",
                 "site": torrent.site_name or "",
                 "save_path": self._music_dir,
                 "status": "downloading",
+                "size": torrent.size or 0,
+                "size_text": fmt_size(torrent.size),
             }, f"已加入下载：{torrent.title or title or '音乐下载'}",
                f"{torrent.site_name or '-'} | 保存到 {self._music_dir}")
             return {"success": True, "data": {"hash": did,
                                               "save_path": self._music_dir,
+                                              "size": torrent.size or 0,
+                                              "size_text": fmt_size(torrent.size),
                                               "label": self._label,
                                               "status": "downloading"}}
 
@@ -649,6 +666,7 @@ class MusicDownloader(_PluginBase):
             prefer_lossless=payload.get("prefer_lossless"),
             min_seeders=payload.get("min_seeders"),
             album_aliases=payload.get("album_aliases"),
+            kind=payload.get("kind"),
         )
         if self._notify_on_search:
             if data.get("results"):
@@ -687,7 +705,7 @@ class MusicDownloader(_PluginBase):
     async def api_tasks(self, status: Optional[str] = None) -> dict:
         """查询任务：合并插件历史 + 下载器实时状态；检测到完成/暂停时更新并推送结果"""
         history = self.get_data("downloads") or []
-        live = self._live_torrents()
+        live = self._live_torrents() or {}
 
         changed = False
         for item in history:
@@ -727,6 +745,41 @@ class MusicDownloader(_PluginBase):
         if status:
             tasks = [t for t in tasks if t["status"] == status]
         return {"success": True, "data": {"tasks": tasks}}
+
+    @staticmethod
+    def _test_itunes() -> bool:
+        """检查元数据服务（iTunes）可达性（单曲降级专辑依赖）"""
+        try:
+            import requests
+            r = requests.get("https://itunes.apple.com/search",
+                             params={"term": "test song", "entity": "song", "limit": 1},
+                             timeout=5)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    async def api_test(self, payload: dict = Body(default_factory=dict)) -> dict:
+        """测试插件连通性与配置（供 APP 的「测试按钮」逐项展示）"""
+        checks = []
+        checks.append({"name": "插件启用", "ok": self._enabled,
+                       "detail": "已启用" if self._enabled else "未启用"})
+        self._refresh_dir_status()
+        checks.append({"name": "音乐下载目录", "ok": self._dir_valid,
+                       "detail": self._music_dir if self._dir_valid else self._dir_error})
+        sites = self.api_site_list()
+        checks.append({"name": "搜索站点", "ok": len(sites) > 0,
+                       "detail": f"{len(sites)} 个" if sites else "未配置"})
+        live = self._live_torrents(timeout=3)
+        checks.append({"name": "下载器连接", "ok": live is not None,
+                       "detail": "可达" if live is not None else "超时/不可达"})
+        meta_ok = await asyncio.to_thread(self._test_itunes)
+        checks.append({"name": "元数据服务(iTunes)", "ok": meta_ok,
+                       "detail": "可达" if meta_ok else "不可达（单曲降级专辑将不可用）"})
+        failed = [c for c in checks if not c["ok"]]
+        return {"success": True, "data": {
+            "summary": "全部通过" if not failed else f"{len(failed)} 项未通过",
+            "checks": checks,
+        }}
 
     async def api_history(self) -> dict:
         """下载历史（含实时状态）"""
@@ -913,12 +966,13 @@ class MusicDownloader(_PluginBase):
         return sent
 
     def _record(self, did: str, title: str, site: str,
-                save_path: str, status: str):
+                save_path: str, status: str, size: float = 0.0):
         history = self.get_data("downloads") or []
         history = [h for h in history if h.get("hash") != did]
         history.append({
             "hash": did, "title": title, "site": site,
             "save_path": save_path, "status": status,
+            "size": float(size or 0), "size_text": fmt_size(size),
             "create_time": datetime.now().isoformat(),
         })
         self.save_data("downloads", history[-200:])  # 保留最近 200 条
@@ -1052,10 +1106,10 @@ class MusicDownloader(_PluginBase):
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         }
 
-    def _live_torrents(self, timeout: float = 3.0) -> Dict[str, dict]:
+    def _live_torrents(self, timeout: float = 3.0) -> Optional[Dict[str, dict]]:
         """查询下载器实时任务（线程+超时），防止下载器挂起拖垮 MoviePilot 事件循环。
 
-        失败/超时返回 {}，调用方回退为仅插件历史（无实时状态）。
+        成功返回 {hash: {...}}（可能为空）；失败/超时返回 None（调用方回退为仅历史）。
         """
         from concurrent.futures import ThreadPoolExecutor
 
@@ -1073,14 +1127,14 @@ class MusicDownloader(_PluginBase):
             return ex.submit(_query).result(timeout=timeout)
         except Exception:
             logger.warn(f"【{self.plugin_name}】查询下载器超时({timeout}s)，跳过实时状态")
-            return {}
+            return None
         finally:
             ex.shutdown(wait=False)
 
     def _history_rows(self) -> List[dict]:
         """下载历史 + 下载器实时状态（属性安全）"""
         history = self.get_data("downloads") or []
-        live = self._live_torrents()
+        live = self._live_torrents() or {}
         status_map = {"downloading": "下载中", "completed": "已完成",
                       "failed": "失败", "paused": "暂停"}
         rows = []
@@ -1094,6 +1148,8 @@ class MusicDownloader(_PluginBase):
                 "status": status_map.get(st, st),
                 "state": lt.get("state") or "",
                 "progress": f"{float(progress):.1f}%" if progress is not None else "",
+                "size": item.get("size") or 0,
+                "size_text": item.get("size_text") or "",
                 "save_path": lt.get("save_path") or item.get("save_path") or "",
                 "create_time": item.get("create_time") or "",
                 "finish_time": item.get("finish_time") or "",
