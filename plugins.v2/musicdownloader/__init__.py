@@ -94,6 +94,7 @@ if _HAS_AGENT_TOOLS:
         keyword: Optional[str] = Field(None, description="完整搜索关键词")
         artist: Optional[str] = Field(None, description="艺人名，如：周杰伦")
         album: Optional[str] = Field(None, description="专辑名，如：叶惠美")
+        album_aliases: Optional[List[str]] = Field(None, description="专辑别名/英文名列表，如 Capricorn")
         year: Optional[int] = Field(None, description="年份（可选）")
         limit: Optional[int] = Field(10, description="返回条数上限")
         prefer_lossless: Optional[bool] = Field(True, description="无损优先")
@@ -104,9 +105,9 @@ if _HAS_AGENT_TOOLS:
         args_schema: type = MusicSearchInput
 
         async def run(self, keyword: str = None, artist: str = None,
-                      album: str = None, year: int = None,
-                      limit: int = 10, prefer_lossless: bool = True,
-                      **kwargs) -> str:
+                      album: str = None, album_aliases: Optional[List[str]] = None,
+                      year: int = None, limit: int = 10,
+                      prefer_lossless: bool = True, **kwargs) -> str:
             import json
             inst = _get_instance()
             if not inst:
@@ -114,6 +115,7 @@ if _HAS_AGENT_TOOLS:
             data = await inst.do_search(
                 keyword=keyword, artist=artist, album=album, year=year,
                 limit=limit, prefer_lossless=prefer_lossless,
+                album_aliases=album_aliases,
             )
             return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -150,7 +152,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.1"
+    plugin_version = "0.4.2"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -280,7 +282,8 @@ class MusicDownloader(_PluginBase):
     async def _search_and_screen(self, kw: str, cfg: dict,
                                   site_ids: List[int],
                                   artist: str = None, album: str = None,
-                                  keyword: str = None) -> dict:
+                                  keyword: str = None,
+                                  album_aliases: Optional[List[str]] = None) -> dict:
         """单次搜索 + 写共享缓存 + 筛查 + 相关度排序"""
         contexts = await SearchChain().async_search_by_title(
             title=kw, sites=site_ids, page=0, cache_local=False
@@ -310,13 +313,15 @@ class MusicDownloader(_PluginBase):
                 "pubdate": t.pubdate,
                 "enclosure": t.enclosure,
             })
-        return screen(items, cfg, artist=artist, album=album, keyword=keyword)
+        return screen(items, cfg, artist=artist, album=album,
+                      keyword=keyword, album_aliases=album_aliases)
 
     async def do_search(self, keyword: str = None, artist: str = None,
                         album: str = None, year: int = None,
                         limit: int = 10,
                         prefer_lossless: Optional[bool] = None,
-                        min_seeders: Optional[int] = None) -> dict:
+                        min_seeders: Optional[int] = None,
+                        album_aliases: Optional[List[str]] = None) -> dict:
         """全站点关键词搜索 -> 音乐/影视判别 -> 无损优先+相关度 -> 排序
 
         结果写入 MoviePilot 共享缓存（__search_result__），与官方 Agent 工具
@@ -340,7 +345,8 @@ class MusicDownloader(_PluginBase):
             "show_uncertain": self._show_uncertain,
         }
         result = await self._search_and_screen(
-            kw, cfg, site_ids, artist=artist, album=album, keyword=keyword)
+            kw, cfg, site_ids, artist=artist, album=album, keyword=keyword,
+            album_aliases=album_aliases)
 
         # 单曲/专辑关键词无结果 -> 退回艺人名搜索（PT 站常按专辑/艺人建种）
         artist_only = build_keyword(keyword=artist)
@@ -350,7 +356,7 @@ class MusicDownloader(_PluginBase):
                         self.plugin_name, kw, artist_only)
             result = await self._search_and_screen(
                 artist_only, cfg, site_ids, artist=artist, album=album,
-                keyword=keyword)
+                keyword=keyword, album_aliases=album_aliases)
 
         self._last_kw = kw
         self._last_dropped = result["dropped_video"] + result["dropped_uncertain"]
@@ -370,6 +376,7 @@ class MusicDownloader(_PluginBase):
                 "quality": item["quality"],
                 "quality_label": item["quality_label"],
                 "relevance": item["relevance"],
+                "album_matched": item.get("album_matched", False),
                 "size_text": fmt_size(item.get("size")),
                 "seeders": item["seeders"],
                 "grabs": item["grabs"],
@@ -381,6 +388,7 @@ class MusicDownloader(_PluginBase):
             "keyword": kw,
             "searched_sites": [s.get("name") for s in self.api_site_list()],
             "total": len(results),
+            "album_matched_any": any(r.get("album_matched") for r in results),
             "dropped_video": result["dropped_video"],
             "dropped_uncertain": result["dropped_uncertain"],
             "results": results,
@@ -526,6 +534,7 @@ class MusicDownloader(_PluginBase):
             limit=payload.get("limit") or 10,
             prefer_lossless=payload.get("prefer_lossless"),
             min_seeders=payload.get("min_seeders"),
+            album_aliases=payload.get("album_aliases"),
         )
         if data.get("results"):
             self._notify(event="music.search",

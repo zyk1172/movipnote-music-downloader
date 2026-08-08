@@ -140,23 +140,31 @@ def build_keyword(keyword: Optional[str] = None, artist: Optional[str] = None,
     return kw
 
 
+def _album_hit(t: Dict[str, Any], album: Optional[str],
+              album_aliases: Optional[List[str]] = None) -> bool:
+    """专辑是否命中：专辑名或任一别名出现在标题/副标题中"""
+    title_desc = norm(f"{t.get('title') or ''} {t.get('description') or ''}")
+    candidates = [a for a in ([album] + list(album_aliases or [])) if a and str(a).strip()]
+    return any(norm(str(c)).strip() and norm(str(c)).strip() in title_desc for c in candidates)
+
+
 def relevance(t: Dict[str, Any], artist: Optional[str] = None,
               album: Optional[str] = None,
-              keyword: Optional[str] = None) -> int:
+              keyword: Optional[str] = None,
+              album_aliases: Optional[List[str]] = None) -> int:
     """
     标题与搜索词相关度 0-100：
-      - 艺人命中 +30，专辑/关键词命中 +40，年份命中 +10（可叠加，上限 100）
+      - 艺人命中 +30，专辑（含别名）命中 +40，关键词命中 +40（可叠加，上限 100）
       - 无搜索词时返回 50（中性）
     """
     title_desc = norm(f"{t.get('title') or ''} {t.get('description') or ''}")
     terms = []
     if artist and str(artist).strip():
         terms.append((30, norm(str(artist).strip())))
-    if album and str(album).strip():
-        terms.append((40, norm(str(album).strip())))
+    if _album_hit(t, album, album_aliases):
+        terms.append((40, "__album__"))
     if keyword and str(keyword).strip():
         kw = norm(str(keyword).strip())
-        # 避免与 artist/album 重复计分
         if kw not in [v for _, v in terms]:
             terms.append((40, kw))
     if not terms:
@@ -164,14 +172,17 @@ def relevance(t: Dict[str, Any], artist: Optional[str] = None,
 
     score = 0
     for weight, term in terms:
-        if term and term in title_desc:
+        if term == "__album__":
+            score += weight
+        elif term and term in title_desc:
             score += weight
     return min(100, score)
 
 
 def screen(items: List[Dict[str, Any]], config: Dict[str, Any],
            artist: Optional[str] = None, album: Optional[str] = None,
-           keyword: Optional[str] = None) -> Dict[str, Any]:
+           keyword: Optional[str] = None,
+           album_aliases: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     筛查 + 相关度 + 排序
     :param items: 原始资源列表（dict）
@@ -218,7 +229,9 @@ def screen(items: List[Dict[str, Any]], config: Dict[str, Any],
             "audio_format": audio_format,
             "quality": quality,
             "quality_label": quality_label(quality),
-            "relevance": relevance(item, artist=artist, album=album, keyword=keyword),
+            "relevance": relevance(item, artist=artist, album=album,
+                                   keyword=keyword, album_aliases=album_aliases),
+            "album_matched": _album_hit(item, album, album_aliases),
         })
         results.append(entry)
 

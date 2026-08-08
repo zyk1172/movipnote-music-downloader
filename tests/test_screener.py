@@ -117,3 +117,21 @@ def test_relevance_ranking():
                           artist="周杰伦", album="叶惠美")
     assert out["results"][0]["title"].startswith("周杰伦"), "艺人/专辑相关度应优先"
     assert out["results"][0]["relevance"] > out["results"][1]["relevance"]
+
+
+def test_album_aliases_and_matched():
+    """中文专辑名 + 英文别名：别名命中应计入 album_matched/relevance"""
+    items = [
+        {"title": "Jay Chou - Capricorn 2008 - FLAC分轨", "category": "音乐",
+         "size": 1, "seeders": 5},
+        {"title": "Jay Chou - Fantasy 2001 - FLAC分轨", "category": "音乐",
+         "size": 1, "seeders": 99},
+    ]
+    out = screener.screen(items, {"require_music": True, "prefer_lossless": True},
+                          artist="Jay Chou", album="魔杰座",
+                          album_aliases=["Capricorn"])
+    assert out["results"][0]["title"].startswith("Jay Chou - Capricorn"), "别名命中应优先"
+    assert out["results"][0]["album_matched"] is True
+    assert out["results"][0]["relevance"] >= 70
+    assert out["results"][1]["album_matched"] is False
+    assert out["results"][1]["relevance"] < 70  # 仅艺人命中(30)
