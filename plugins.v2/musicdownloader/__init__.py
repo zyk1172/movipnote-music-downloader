@@ -170,7 +170,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.6"
+    plugin_version = "0.5.7"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -372,6 +372,9 @@ class MusicDownloader(_PluginBase):
              "summary": "清空下载历史"},
             {"path": "/history/remove", "endpoint": self.api_history_remove, "methods": ["POST"],
              "summary": "移除单条下载历史", "description": "body: {hash}"},
+            {"path": "/history/clean", "endpoint": self.api_history_clean, "methods": ["POST"],
+             "summary": "按条件清理历史",
+             "description": "body: {status?, keep?, orphans?}：status=completed/failed/paused/downloading；keep=只保留最近N条；orphans=清理下载器已不存在的记录"},
         ]
         auth_dep = Depends(_make_auth_check(self))
         for item in api_list:
@@ -866,6 +869,33 @@ class MusicDownloader(_PluginBase):
         new_history = [x for x in history if x.get("hash") != h]
         self.save_data("downloads", new_history)
         return {"success": True, "message": f"已移除记录 {h[:12]}"}
+
+    async def api_history_clean(self, payload: dict = Body(default_factory=dict)) -> dict:
+        """按条件清理历史：status=按状态清理；keep=只保留最近N条；orphans=清理下载器中已不存在的记录"""
+        history = self.get_data("downloads") or []
+        before = len(history)
+
+        status_filter = str(payload.get("status") or "").strip().lower()
+        try:
+            keep = max(0, int(payload.get("keep") or 0))
+        except (TypeError, ValueError):
+            keep = 0
+        orphans = bool(payload.get("orphans", False))
+
+        if status_filter:
+            history = [h for h in history if h.get("status") != status_filter]
+        if orphans:
+            hashes = [h.get("hash") for h in history if h.get("hash")]
+            live = self._live_torrents(hashs=hashes)
+            if live is not None:
+                history = [h for h in history
+                           if not h.get("hash") or h["hash"] in live]
+            # live 为 None（下载器不可达）时保留原记录，不误删
+        if keep > 0:
+            history = history[-keep:]
+
+        self.save_data("downloads", history)
+        return {"success": True, "data": {"before": before, "after": len(history)}}
 
     async def api_on_complete(self, hash: str = None, name: str = None) -> dict:
         """下载完成回调（qBittorrent 外部程序）：GET ?hash=%I&name=%N"""
