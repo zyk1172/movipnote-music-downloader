@@ -161,7 +161,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.5"
+    plugin_version = "0.4.6"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -183,6 +183,7 @@ class MusicDownloader(_PluginBase):
     _exclude_keywords: List[str] = []
     _show_uncertain: bool = True
     _fallback_artist: bool = True
+    _single_fallback_album: bool = True
     _notify_url: str = ""
     _notify_token: str = ""
     _notify_enabled: bool = False
@@ -221,6 +222,7 @@ class MusicDownloader(_PluginBase):
         ]
         self._show_uncertain = bool(config.get("show_uncertain", True))
         self._fallback_artist = bool(config.get("fallback_artist", True))
+        self._single_fallback_album = bool(config.get("single_fallback_album", True))
         self._notify_enabled = bool(config.get("notify_enabled", False))
         self._notify_on_search = bool(config.get("notify_on_search", True))
         self._notify_url = str(config.get("notify_url") or "").strip()
@@ -242,6 +244,7 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
+            "single_fallback_album": self._single_fallback_album,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
@@ -433,6 +436,24 @@ class MusicDownloader(_PluginBase):
                 artist_only, cfg, site_ids, artist=artist, album=album,
                 keyword=keyword, album_aliases=album_aliases)
 
+        # 单曲未命中 -> 通过 MusicBrainz 解析所属专辑，按专辑重搜（大小受 max_size_gb 限制）
+        self._last_fallback_album = None
+        if (self._single_fallback_album and artist and album
+                and not result.get("album_matched_any")):
+            album_title = await asyncio.to_thread(
+                self._resolve_album_via_musicbrainz, artist, album)
+            if album_title:
+                kw_album = build_keyword(keyword=album_title, artist=artist)
+                result = await self._search_and_screen(
+                    kw_album, cfg, site_ids, artist=artist,
+                    album=album_title, keyword=album_title,
+                    album_aliases=[album_title])
+                if result.get("album_matched_any"):
+                    self._last_fallback_album = album_title
+                    logger.info(
+                        "【%s】单曲「%s」未命中，降级为专辑「%s」重搜（大小上限 %.1fGB）",
+                        self.plugin_name, album, album_title, self._max_size_gb)
+
         self._last_kw = kw
         self._last_dropped = result["dropped_video"] + result["dropped_uncertain"]
 
@@ -464,6 +485,7 @@ class MusicDownloader(_PluginBase):
             "searched_sites": [s.get("name") for s in self.api_site_list()],
             "total": len(results),
             "album_matched_any": any(r.get("album_matched") for r in results),
+            "fallback_album": self._last_fallback_album,
             "dropped_video": result["dropped_video"],
             "dropped_uncertain": result["dropped_uncertain"],
             "results": results,
@@ -767,6 +789,7 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
+            "single_fallback_album": self._single_fallback_album,
             "notify_enabled": self._notify_enabled,
             "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
@@ -784,6 +807,43 @@ class MusicDownloader(_PluginBase):
             self._dir_valid = True
         except ValueError as err:
             self._dir_error = str(err)
+
+    @staticmethod
+    def _resolve_album_via_musicbrainz(artist: str, song: str) -> Optional[str]:
+        """通过 MusicBrainz 解析「歌曲 -> 所属专辑名」，失败返回 None"""
+        import time as _time
+        try:
+            import requests
+        except Exception:
+            return None
+        url = "https://musicbrainz.org/ws/2/recording/"
+        params = {
+            "query": f'recording:"{song}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": 3,
+        }
+        headers = {"User-Agent":
+                   "MusicDownloader/0.4.6 (https://github.com/zyk1172/movipnote-music-downloader)"}
+        try:
+            _time.sleep(1)  # MusicBrainz 限流 ~1 req/s
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            for rec in (data.get("recordings") or [])[:3]:
+                for rel in (rec.get("releases") or []):
+                    title = (rel.get("title") or "").strip()
+                    rg = rel.get("release-group") or {}
+                    ptype = rel.get("primary-type") or rg.get("primary-type")
+                    if title and ptype in (None, "Album"):
+                        return title
+            for rec in (data.get("recordings") or [])[:3]:
+                rels = rec.get("releases") or []
+                if rels and (rels[0].get("title") or "").strip():
+                    return rels[0]["title"].strip()
+        except Exception as err:
+            logger.warn(f"【MusicDownloader】MusicBrainz 解析专辑失败: {err}")
+        return None
 
     def _resolve_site_ids(self) -> List[int]:
         """生效的搜索站点：全部启用索引站点 或 include/exclude 交集"""
@@ -927,6 +987,11 @@ class MusicDownloader(_PluginBase):
                                       "props": {"model": "fallback_artist", "label": "无结果退艺人搜索",
                                                 "hint": "单曲搜不到时按艺人名再搜一轮",
                                                 "persistent-hint": True}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
+                         "content": [{"component": "VSwitch",
+                                      "props": {"model": "single_fallback_album", "label": "单曲降级专辑",
+                                                "hint": "单曲无资源时经MusicBrainz解析所属专辑下载（受大小上限约束）",
+                                                "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 4},
@@ -981,6 +1046,7 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
+            "single_fallback_album": self._single_fallback_album,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,

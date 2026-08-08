@@ -135,3 +135,17 @@ def test_album_aliases_and_matched():
     assert out["results"][0]["relevance"] >= 70
     assert out["results"][1]["album_matched"] is False
     assert out["results"][1]["relevance"] < 70  # 仅艺人命中(30)
+
+
+def test_max_size_gb_filters_album():
+    """单曲降级专辑场景：专辑大小超过 max_size_gb 应被过滤"""
+    items = [
+        {"title": "Michael Jackson - Thriller FLAC", "category": "音乐",
+         "size": 3.5 * 1024 ** 3, "seeders": 10},
+        {"title": "Michael Jackson - Thriller SACD DSD", "category": "音乐",
+         "size": 8 * 1024 ** 3, "seeders": 20},
+    ]
+    out = screener.screen(items, {"require_music": True, "prefer_lossless": True,
+                                  "max_size_gb": 5.0})
+    titles = [r["title"] for r in out["results"]]
+    assert titles == ["Michael Jackson - Thriller FLAC"], f"超限专辑未被过滤: {titles}"
