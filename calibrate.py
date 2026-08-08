@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 def load_screener():
     """绕过 MusicDownloader/__init__.py，直接加载纯筛查模块"""
     import importlib.util
-    path = HERE / "MusicDownloader" / "screener.py"
+    path = HERE / "plugins.v2" / "musicdownloader" / "screener.py"
     spec = importlib.util.spec_from_file_location("screener", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

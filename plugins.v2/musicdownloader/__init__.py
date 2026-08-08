@@ -130,9 +130,9 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.3.1"
+    plugin_version = "0.3.2"
     plugin_author = "zyk1172"
-    plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/MusicDownloader/icon.png"
+    plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
     # 运行时状态
     _enabled: bool = False

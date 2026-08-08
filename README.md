@@ -12,14 +12,15 @@
 ## 目录
 
 ```
-MusicDownloader/
+plugins.v2/musicdownloader/
 ├── __init__.py        # 插件主体（_PluginBase，REST API + Agent 工具 + 服务 + 通知）
-└── screener.py        # 纯 Python 筛查引擎（无 MoviePilot 依赖，可独立测试）
+├── screener.py        # 纯 Python 筛查引擎（无 MoviePilot 依赖，可独立测试）
+└── icon.png
+package.v2.json        # MoviePilot V2 市场索引（version 需与 __init__.py plugin_version 一致）
 calibrate.py           # 筛查准确率校准（offline 夹具 / live 真实站点）
 tests/
 ├── fixtures/          # 带标注的真实风格标题（music/video/uncertain）
 └── test_screener.py   # pytest 回归测试
-package.json           # 插件市场索引（version 需与 __init__.py plugin_version 一致）
 ```
 
 ## 安装
@@ -27,6 +28,7 @@ package.json           # 插件市场索引（version 需与 __init__.py plugin_
 ### 方式一：插件市场（推荐）
 
 1. 本仓库已推送至 **https://github.com/zyk1172/movipnote-music-downloader**（公开，`main` 分支）；
+   已按 MoviePilot **V2 市场规范**组织：`package.v2.json` 索引 + `plugins.v2/musicdownloader/` 代码目录；
 2. MoviePilot 后台 → 设置 → 插件市场 → 加入本仓库地址；
 3. 安装「音乐下载」，按配置页填写：
    - 音乐下载目录（MoviePilot 已配置下载目录或其子目录）
@@ -38,7 +40,7 @@ package.json           # 插件市场索引（version 需与 __init__.py plugin_
 ### 方式二：本地开发
 
 ```bash
-# 把 MusicDownloader/ 放到 MoviePilot 的 app/plugins/ 下（或插件市场指向本仓库）
+# 把 plugins.v2/musicdownloader/ 的内容放到 MoviePilot 的 app/plugins/musicdownloader/ 下（或插件市场指向本仓库）
 # 设置环境变量 PLUGIN_AUTO_RELOAD=true 可热加载
 ```
 
