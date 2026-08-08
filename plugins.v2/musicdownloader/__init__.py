@@ -164,7 +164,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.0"
+    plugin_version = "0.5.1"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -182,7 +182,8 @@ class MusicDownloader(_PluginBase):
     _require_music: bool = True
     _prefer_lossless: bool = True
     _min_seeders: int = 0
-    _max_size_gb: float = 0.0
+    _max_size_gb: float = 5.0
+    _album_max_size_gb: float = 0.0
     _exclude_keywords: List[str] = []
     _show_uncertain: bool = True
     _fallback_artist: bool = True
@@ -219,7 +220,11 @@ class MusicDownloader(_PluginBase):
         try:
             self._max_size_gb = max(0.0, float(config.get("max_size_gb") or 0))
         except (TypeError, ValueError):
-            self._max_size_gb = 0.0
+            self._max_size_gb = 5.0
+        try:
+            self._album_max_size_gb = max(0.0, float(config.get("album_max_size_gb") or 0))
+        except (TypeError, ValueError):
+            self._album_max_size_gb = 0.0
         self._exclude_keywords = [
             k.strip().lower() for k in str(config.get("exclude_keywords") or "").split(",") if k.strip()
         ]
@@ -244,6 +249,7 @@ class MusicDownloader(_PluginBase):
             "sites_include": self._sites_include, "sites_exclude": self._sites_exclude,
             "require_music": self._require_music, "prefer_lossless": self._prefer_lossless,
             "min_seeders": self._min_seeders, "max_size_gb": self._max_size_gb,
+            "album_max_size_gb": self._album_max_size_gb,
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
@@ -423,7 +429,10 @@ class MusicDownloader(_PluginBase):
         # kind: single=单曲（大小上限生效）/ album=专辑合集（不限大小）/ auto=自动
         kind = (kind or "auto").strip().lower()
         single_mode = kind == "single" or (kind == "auto" and bool(album))
-        size_limit = self._max_size_gb if single_mode else 0.0
+        # 单曲/合集各自体积上限；单曲降级到合集时走合集体积上限
+        single_size = self._max_size_gb
+        album_size = self._album_max_size_gb
+        size_limit = single_size if single_mode else album_size
 
         cfg = {
             "require_music": self._require_music,
@@ -433,7 +442,7 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
         }
-        cfg_album = dict(cfg, max_size_gb=0.0)  # 专辑/合集不受大小上限约束
+        cfg_album = dict(cfg, max_size_gb=album_size)  # 合集走合集体积上限
         result = await self._search_and_screen(
             kw, cfg, site_ids, artist=artist, album=album, keyword=keyword,
             album_aliases=album_aliases)
@@ -506,7 +515,8 @@ class MusicDownloader(_PluginBase):
             "fallback_resolved": self._last_fallback_resolved,
             "fallback_album": self._last_fallback_album,
             "kind": "single" if single_mode else "album",
-            "size_limit_applied": bool(single_mode and self._max_size_gb > 0),
+            "size_limit_gb": size_limit,
+            "size_limit_applied": bool(size_limit > 0),
             "dropped_video": result["dropped_video"],
             "dropped_uncertain": result["dropped_uncertain"],
             "results": results,
@@ -866,6 +876,7 @@ class MusicDownloader(_PluginBase):
             "prefer_lossless": self._prefer_lossless,
             "min_seeders": self._min_seeders,
             "max_size_gb": self._max_size_gb,
+            "album_max_size_gb": self._album_max_size_gb,
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
@@ -1075,16 +1086,23 @@ class MusicDownloader(_PluginBase):
                                                 "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VTextField",
                                       "props": {"model": "min_seeders", "label": "最低做种数"}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VTextField",
-                                      "props": {"model": "max_size_gb", "label": "单资源上限(GB)"}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                                      "props": {"model": "max_size_gb", "label": "单曲体积上限(GB)",
+                                                "hint": "单曲查询生效，默认5",
+                                                "persistent-hint": True}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
+                         "content": [{"component": "VTextField",
+                                      "props": {"model": "album_max_size_gb", "label": "合集/专辑体积上限(GB)",
+                                                "hint": "0=不限；单曲降级到合集时也按此限制",
+                                                "persistent-hint": True}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VTextField",
                                       "props": {"model": "exclude_keywords", "label": "排除关键词",
-                                                "hint": "逗号分隔，如 MV,演唱会,合集",
+                                                "hint": "逗号分隔，如 MV,演唱会",
                                                 "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
@@ -1124,6 +1142,7 @@ class MusicDownloader(_PluginBase):
             "sites_include": self._sites_include, "sites_exclude": self._sites_exclude,
             "require_music": self._require_music, "prefer_lossless": self._prefer_lossless,
             "min_seeders": self._min_seeders, "max_size_gb": self._max_size_gb,
+            "album_max_size_gb": self._album_max_size_gb,
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
