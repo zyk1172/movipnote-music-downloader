@@ -161,7 +161,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.6"
+    plugin_version = "0.4.7"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -441,7 +441,7 @@ class MusicDownloader(_PluginBase):
         if (self._single_fallback_album and artist and album
                 and not result.get("album_matched_any")):
             album_title = await asyncio.to_thread(
-                self._resolve_album_via_musicbrainz, artist, album)
+                self._resolve_album, artist, album)
             if album_title:
                 kw_album = build_keyword(keyword=album_title, artist=artist)
                 result = await self._search_and_screen(
@@ -809,40 +809,40 @@ class MusicDownloader(_PluginBase):
             self._dir_error = str(err)
 
     @staticmethod
-    def _resolve_album_via_musicbrainz(artist: str, song: str) -> Optional[str]:
-        """通过 MusicBrainz 解析「歌曲 -> 所属专辑名」，失败返回 None"""
-        import time as _time
+    def _resolve_album(artist: str, song: str) -> Optional[str]:
+        """通过 iTunes Search API 解析「歌曲 -> 所属专辑」，失败返回 None
+
+        实测对代表单曲稳定（Billie Jean->Thriller, Love Story->Fearless,
+        Halo->I AM...SASHA FIERCE, Uptown Funk->Uptown Special, Lose Yourself->8 Mile）。
+        """
         try:
             import requests
         except Exception:
             return None
-        url = "https://musicbrainz.org/ws/2/recording/"
-        params = {
-            "query": f'recording:"{song}" AND artist:"{artist}"',
-            "fmt": "json",
-            "limit": 3,
-        }
-        headers = {"User-Agent":
-                   "MusicDownloader/0.4.6 (https://github.com/zyk1172/movipnote-music-downloader)"}
+        url = "https://itunes.apple.com/search"
+        params = {"term": f"{artist} {song}", "entity": "song", "limit": 5}
         try:
-            _time.sleep(1)  # MusicBrainz 限流 ~1 req/s
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            resp = requests.get(url, params=params, timeout=10)
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            for rec in (data.get("recordings") or [])[:3]:
-                for rel in (rec.get("releases") or []):
-                    title = (rel.get("title") or "").strip()
-                    rg = rel.get("release-group") or {}
-                    ptype = rel.get("primary-type") or rg.get("primary-type")
-                    if title and ptype in (None, "Album"):
-                        return title
-            for rec in (data.get("recordings") or [])[:3]:
-                rels = rec.get("releases") or []
-                if rels and (rels[0].get("title") or "").strip():
-                    return rels[0]["title"].strip()
+            results = data.get("results") or []
+            skip = ("live", "remix", "karaoke", "demo", "instrumental",
+                    "a cappella", "dj mix")
+            for r in results:
+                if r.get("wrapperType") != "track":
+                    continue
+                title = str(r.get("trackName") or "").lower()
+                if any(k in title for k in skip):
+                    continue
+                album = (r.get("collectionName") or "").strip()
+                if album:
+                    return album
+            for r in results:
+                if r.get("wrapperType") == "track" and (r.get("collectionName") or "").strip():
+                    return r["collectionName"].strip()
         except Exception as err:
-            logger.warn(f"【MusicDownloader】MusicBrainz 解析专辑失败: {err}")
+            logger.warn(f"【MusicDownloader】iTunes 解析专辑失败: {err}")
         return None
 
     def _resolve_site_ids(self) -> List[int]:
@@ -990,7 +990,7 @@ class MusicDownloader(_PluginBase):
                         {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VSwitch",
                                       "props": {"model": "single_fallback_album", "label": "单曲降级专辑",
-                                                "hint": "单曲无资源时经MusicBrainz解析所属专辑下载（受大小上限约束）",
+                                                "hint": "单曲无资源时经iTunes解析所属专辑下载（受大小上限约束）",
                                                 "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
