@@ -1,10 +1,52 @@
 [
-  {"title": "盗梦空间 2010 1080p BluRay REMUX HDR HEVC", "category": "电影", "expected": "video"},
-  {"title": "繁花 2023 S01E01-E30 4K WEB-DL", "category": "剧集", "expected": "video"},
-  {"title": "Taylor Swift The Eras Tour (2023) 2160p WEB-DL", "category": "演唱会", "expected": "video"},
-  {"title": "周杰伦 - 叶惠美 MV 1080p", "category": "音乐", "expected": "video"},
-  {"title": "星际穿越 2014 4K UHD HDR x265", "category": "电影", "expected": "video"},
-  {"title": "周杰伦 地表最强 演唱会 蓝光原盘", "category": "演唱会", "expected": "video"},
-  {"title": "三体 2023 第1集-第30集 1080p", "category": "剧集", "expected": "video"},
-  {"title": "阿凡达2 2022 4K REMUX 杜比视界", "category": "电影", "expected": "video"}
+  {
+    "title": "盗梦空间 2010 1080p BluRay REMUX HDR HEVC",
+    "category": "电影",
+    "expected": "video"
+  },
+  {
+    "title": "繁花 2023 S01E01-E30 4K WEB-DL",
+    "category": "剧集",
+    "expected": "video"
+  },
+  {
+    "title": "Taylor Swift The Eras Tour (2023) 2160p WEB-DL",
+    "category": "演唱会",
+    "expected": "video"
+  },
+  {
+    "title": "周杰伦 - 叶惠美 MV 1080p",
+    "category": "音乐",
+    "expected": "video"
+  },
+  {
+    "title": "星际穿越 2014 4K UHD HDR x265",
+    "category": "电影",
+    "expected": "video"
+  },
+  {
+    "title": "周杰伦 地表最强 演唱会 蓝光原盘",
+    "category": "演唱会",
+    "expected": "video"
+  },
+  {
+    "title": "三体 2023 第1集-第30集 1080p",
+    "category": "剧集",
+    "expected": "video"
+  },
+  {
+    "title": "阿凡达2 2022 4K REMUX 杜比视界",
+    "category": "电影",
+    "expected": "video"
+  },
+  {
+    "title": "周杰伦 嘉年华世界巡回演唱会 4K HDR",
+    "category": "演唱会",
+    "expected": "video"
+  },
+  {
+    "title": "Various Artists - MV合集 1080p",
+    "category": "音乐",
+    "expected": "video"
+  }
 ]

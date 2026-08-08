@@ -91,3 +91,29 @@ def test_screen_filters_video_and_excluded():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_cjk_boundary_formats():
+    """中文紧贴格式（FLAC分轨/WAV整轨）应正确识别为无损"""
+    r = screener.classify({"title": "周杰伦 - 叶惠美 FLAC分轨", "category": "音乐"})
+    assert r[0] is True and r[2] == "FLAC" and r[3] == 90, r
+    r = screener.classify({"title": "陈奕迅 - 富士山下 WAV整轨", "category": "音乐"})
+    assert r[0] is True and r[2] == "WAV" and r[3] == 90, r
+
+
+def test_high_spec_variant_24_96():
+    r = screener.classify({"title": "Taylor Swift - Red 24bit/96kHz FLAC", "category": "音乐"})
+    assert r[0] is True and r[3] == 100, r
+
+
+def test_relevance_ranking():
+    items = [
+        {"title": "Various Artists - 合辑 FLAC", "category": "音乐",
+         "size": 1, "seeders": 99, "grabs": 1},
+        {"title": "周杰伦 - 叶惠美 FLAC", "category": "音乐",
+         "size": 1, "seeders": 5, "grabs": 1},
+    ]
+    out = screener.screen(items, {"require_music": True, "prefer_lossless": True},
+                          artist="周杰伦", album="叶惠美")
+    assert out["results"][0]["title"].startswith("周杰伦"), "艺人/专辑相关度应优先"
+    assert out["results"][0]["relevance"] > out["results"][1]["relevance"]

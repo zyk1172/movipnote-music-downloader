@@ -6,7 +6,8 @@ screener.py —— 音乐/影视筛查引擎（纯 Python，无 MoviePilot 依�
 - 所有特征库集中在文件头部，按实际站点搜索结果迭代校准即可。
 
 输入约定：每条资源为 dict，至少包含 title；可选 description / category / labels / size / seeders / grabs。
-输出约定：classify() 返回 (music, confidence, audio_format, quality)。
+输出约定：classify() 返回 (music, confidence, audio_format, quality)；
+          screen() 额外计算 relevance（与搜索词的相关度）并排序。
 
 三分类：
   music=True   命中音频特征且未命中影视特征
@@ -31,31 +32,34 @@ AUDIO_FORMATS: Dict[str, int] = {
 
 # 音频特征（命中任一 -> 倾向 music）
 AUDIO_PATTERNS: List[str] = [
-    r"\bflac\b", r"\bape\b", r"\bwav\b", r"\balac\b", r"\bdsf\b", r"\bdff\b",
-    r"\bdsd\b", r"\btak\b", r"\baiff\b", r"\bwv\b",
-    r"24\s?bit", r"96\s?khz", r"192\s?khz", r"hi-?res", r"\bmaster(?:ing)?\b",
-    r"无损", r"hifi", r"\bhq\b",
-    r"音乐", r"\bmusic\b", r"\balbum\b", r"专辑", r"\bost\b", r"soundtrack",
+    r"flac", r"ape", r"wav", r"alac", r"dsf", r"dff", r"dsd", r"tak", r"aiff", r"wv",
+    r"24\s?bit", r"24\s?/\s?96", r"96\s?khz", r"192\s?khz", r"hi-?res", r"master(?:ing)?",
+    r"无损", r"hifi", r"hq",
+    r"音乐", r"music", r"album", r"专辑", r"ost", r"soundtrack",
     r"原声", r"原声带", r"单曲", r"作品集", r"精选集", r"合辑",
+    r"分轨", r"整轨", r"flac分", r"wav整",  # 中文紧贴格式，如 FLAC分轨 / WAV整轨
 ]
-
 # 影视特征（命中任一 -> 丢弃）
 VIDEO_PATTERNS: List[str] = [
-    r"2160p", r"\b4k\b", r"1080p", r"720p", r"\bblu-?ray\b", r"\bremux\b",
-    r"\bweb-?dl\b", r"\bwebrip\b", r"\bhdr\b", r"\bdv\b", r"\bhevc\b",
-    r"\bx26[45]\b", r"h\.?26[45]\b", r"\buhd\b", r"杜比", r"全景声",
-    r"\bs0?1e\d+\b", r"第\s*\d+\s*集", r"\bepisode\b", r"全集",
-    r"\bmv\b", r"music video", r"演唱会", r"concert", r"live\s+show",
+    r"2160p", r"\b4k\b", r"1080p", r"720p", r"blu-?ray", r"remux",
+    r"web-?dl", r"webrip", r"\bhdr\b", r"\bdv\b", r"hevc",
+    r"x26[45]", r"h\.?26[45]", r"\buhd\b", r"杜比", r"全景声",
+    r"s0?1e\d+", r"第\s*\d+\s*集", r"episode", r"全集",
+    r"\bmv\b", r"music video", r"演唱会", r"concert", r"live\s+show", r"卡拉ok",
 ]
-
 # 站点分类关键词
 MUSIC_CATEGORY: List[str] = ["音乐", "Music", "Audio", "原声", "OST", "无损"]
 VIDEO_CATEGORY: List[str] = ["电影", "剧集", "电视剧", "综艺", "纪录", "动漫", "体育", "Video"]
 
 # 高规格无损（质量 100）
 HIGH_SPEC_PATTERNS: List[str] = [
-    r"24\s?bit", r"96\s?khz", r"192\s?khz", r"hi-?res", r"\bds[df]\b", r"\bdsd\b",
+    r"24\s?bit", r"24\s?/\s?96", r"96\s?khz", r"192\s?khz", r"hi-?res",
+    r"\bds[df]\b", r"\bdsd\b",
 ]
+
+# 词边界：兼容中文紧贴（FLAC分轨 中 'c' 与 '分' 之间无 \b）
+def _fmt_regex(fmt: str) -> re.Pattern:
+    return re.compile(rf"(?<![a-z0-9]){re.escape(fmt)}(?![a-z0-9])", re.IGNORECASE)
 
 
 def norm(text: Optional[str]) -> str:
@@ -63,10 +67,10 @@ def norm(text: Optional[str]) -> str:
 
 
 def detect_audio_format(text: Optional[str]) -> Tuple[Optional[str], int]:
-    """识别音频格式，返回 (格式, 基础分)"""
+    """识别音频格式，返回 (格式, 基础分)；兼容 FLAC分轨 等中文紧贴写法"""
     t = norm(text)
     for fmt, score in AUDIO_FORMATS.items():
-        if re.search(rf"\b{re.escape(fmt)}\b", t):
+        if _fmt_regex(fmt).search(t):
             return fmt.upper(), score
     return None, 30
 
@@ -136,16 +140,47 @@ def build_keyword(keyword: Optional[str] = None, artist: Optional[str] = None,
     return kw
 
 
-def screen(items: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any]:
+def relevance(t: Dict[str, Any], artist: Optional[str] = None,
+              album: Optional[str] = None,
+              keyword: Optional[str] = None) -> int:
     """
-    筛查 + 排序
+    标题与搜索词相关度 0-100：
+      - 艺人命中 +30，专辑/关键词命中 +40，年份命中 +10（可叠加，上限 100）
+      - 无搜索词时返回 50（中性）
+    """
+    title_desc = norm(f"{t.get('title') or ''} {t.get('description') or ''}")
+    terms = []
+    if artist and str(artist).strip():
+        terms.append((30, norm(str(artist).strip())))
+    if album and str(album).strip():
+        terms.append((40, norm(str(album).strip())))
+    if keyword and str(keyword).strip():
+        kw = norm(str(keyword).strip())
+        # 避免与 artist/album 重复计分
+        if kw not in [v for _, v in terms]:
+            terms.append((40, kw))
+    if not terms:
+        return 50
+
+    score = 0
+    for weight, term in terms:
+        if term and term in title_desc:
+            score += weight
+    return min(100, score)
+
+
+def screen(items: List[Dict[str, Any]], config: Dict[str, Any],
+           artist: Optional[str] = None, album: Optional[str] = None,
+           keyword: Optional[str] = None) -> Dict[str, Any]:
+    """
+    筛查 + 相关度 + 排序
     :param items: 原始资源列表（dict）
     :param config: {
         require_music: bool, prefer_lossless: bool,
         min_seeders: int, max_size_gb: float,
         exclude_keywords: List[str], show_uncertain: bool,
     }
-    :return: {"results": [...], "dropped": int, "total": int}
+    :return: {"results": [...], "dropped_video": int, "dropped_uncertain": int, "total": int}
     """
     require_music = bool(config.get("require_music", True))
     prefer_lossless = bool(config.get("prefer_lossless", True))
@@ -155,7 +190,8 @@ def screen(items: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any
     show_uncertain = bool(config.get("show_uncertain", True))
 
     results: List[Dict[str, Any]] = []
-    dropped = 0
+    dropped_video = 0
+    dropped_uncertain = 0
     for item in items:
         title_desc = norm(f"{item.get('title') or ''} {item.get('description') or ''}")
         if any(k in title_desc for k in exclude_keywords):
@@ -168,14 +204,12 @@ def screen(items: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any
 
         music, confidence, audio_format, quality = classify(item)
         if music is False:
-            dropped += 1
+            dropped_video += 1
             continue
-        if music is None and require_music:
-            dropped += 1
-            continue
-        if music is None and not show_uncertain:
-            dropped += 1
-            continue
+        if music is None:
+            if require_music or not show_uncertain:
+                dropped_uncertain += 1
+                continue
 
         entry = dict(item)
         entry.update({
@@ -184,13 +218,23 @@ def screen(items: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any
             "audio_format": audio_format,
             "quality": quality,
             "quality_label": quality_label(quality),
+            "relevance": relevance(item, artist=artist, album=album, keyword=keyword),
         })
         results.append(entry)
 
     if prefer_lossless:
-        results.sort(key=lambda e: (e["quality"], int(e.get("seeders") or 0),
+        # 质量优先 -> 相关度 -> 做种数 -> 完成数
+        results.sort(key=lambda e: (e["quality"], e["relevance"],
+                                    int(e.get("seeders") or 0),
                                     int(e.get("grabs") or 0)), reverse=True)
-    return {"results": results, "dropped": dropped, "total": len(items)}
+    else:
+        # 相关度优先 -> 做种数
+        results.sort(key=lambda e: (e["relevance"],
+                                    int(e.get("seeders") or 0)), reverse=True)
+    return {"results": results,
+            "dropped_video": dropped_video,
+            "dropped_uncertain": dropped_uncertain,
+            "total": len(items)}
 
 
 def evaluate(items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -204,12 +248,7 @@ def evaluate(items: List[Dict[str, Any]]) -> Dict[str, Any]:
               "uncertain": {"music": 0, "video": 0, "uncertain": 0}}
     for item in items:
         expected = item.get("expected")
-        if expected == "music":
-            exp = True
-        elif expected == "video":
-            exp = False
-        else:
-            exp = None
+        exp = {"music": True, "video": False, "uncertain": None}.get(expected)
         got, _, _, _ = classify(item)
         got_key = "music" if got is True else ("video" if got is False else "uncertain")
         exp_key = "music" if exp is True else ("video" if exp is False else "uncertain")

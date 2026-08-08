@@ -1,14 +1,82 @@
 [
-  {"title": "周杰伦 - 叶惠美 (2003) FLAC 24bit 96kHz", "category": "音乐", "expected": "music"},
-  {"title": "Adele - 30 (2021) [FLAC] [Hi-Res]", "category": "音乐", "expected": "music"},
-  {"title": "久石让 - 天空之城 OST 无损FLAC", "category": "原声带", "expected": "music"},
-  {"title": "Coldplay - A Head Full of Dreams (2015) 24bit 192kHz", "category": "音乐", "expected": "music"},
-  {"title": "陈奕迅 - 浮夸 单曲 APE", "category": "音乐", "expected": "music"},
-  {"title": "Hans Zimmer - Inception OST FLAC", "category": "原声", "expected": "music"},
-  {"title": "莫扎特 - 安魂曲 DSD64 DSF", "category": "古典", "expected": "music"},
-  {"title": "Queen - Greatest Hits (1981) FLAC", "category": "音乐", "expected": "music"},
-  {"title": "五月天 - 自传 (2016) 24bit 48kHz", "category": "华语", "expected": "music"},
-  {"title": "Taylor Swift - Midnights (2022) ALAC", "category": "音乐", "expected": "music"},
-  {"title": "周深 - 光亮 (2022) Hi-Res 无损", "category": "音乐", "expected": "music"},
-  {"title": "Various Artists - Now That's What I Call Music! 100", "category": "杂锦", "expected": "music"}
+  {
+    "title": "周杰伦 - 叶惠美 (2003) FLAC 24bit 96kHz",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "Adele - 30 (2021) [FLAC] [Hi-Res]",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "久石让 - 天空之城 OST 无损FLAC",
+    "category": "原声带",
+    "expected": "music"
+  },
+  {
+    "title": "Coldplay - A Head Full of Dreams (2015) 24bit 192kHz",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "陈奕迅 - 浮夸 单曲 APE",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "Hans Zimmer - Inception OST FLAC",
+    "category": "原声",
+    "expected": "music"
+  },
+  {
+    "title": "莫扎特 - 安魂曲 DSD64 DSF",
+    "category": "古典",
+    "expected": "music"
+  },
+  {
+    "title": "Queen - Greatest Hits (1981) FLAC",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "五月天 - 自传 (2016) 24bit 48kHz",
+    "category": "华语",
+    "expected": "music"
+  },
+  {
+    "title": "Taylor Swift - Midnights (2022) ALAC",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "周深 - 光亮 (2022) Hi-Res 无损",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "Various Artists - Now That's What I Call Music! 100",
+    "category": "杂锦",
+    "expected": "music"
+  },
+  {
+    "title": "周杰伦 - 叶惠美 FLAC分轨",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "陈奕迅 - 富士山下 WAV整轨",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "Taylor Swift - Red (Taylor's Version) 24bit/96kHz FLAC",
+    "category": "音乐",
+    "expected": "music"
+  },
+  {
+    "title": "Adele - 25 (2015) [DSD64]",
+    "category": "音乐",
+    "expected": "music"
+  }
 ]

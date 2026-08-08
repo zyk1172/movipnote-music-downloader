@@ -1,5 +1,22 @@
 [
-  {"title": "乐队现场 高清版", "category": "现场", "expected": "uncertain"},
-  {"title": "Greatest Hits Vol.2", "category": "其他", "expected": "uncertain"},
-  {"title": "某艺人 精选作品", "category": "其他", "expected": "uncertain"}
+  {
+    "title": "乐队现场 高清版",
+    "category": "现场",
+    "expected": "uncertain"
+  },
+  {
+    "title": "Greatest Hits Vol.2",
+    "category": "其他",
+    "expected": "uncertain"
+  },
+  {
+    "title": "某艺人 精选作品",
+    "category": "其他",
+    "expected": "uncertain"
+  },
+  {
+    "title": "New Age 精选",
+    "category": "其他",
+    "expected": "uncertain"
+  }
 ]

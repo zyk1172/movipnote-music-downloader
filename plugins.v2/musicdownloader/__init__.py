@@ -150,7 +150,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.3.5"
+    plugin_version = "0.4.0"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -171,6 +171,7 @@ class MusicDownloader(_PluginBase):
     _max_size_gb: float = 0.0
     _exclude_keywords: List[str] = []
     _show_uncertain: bool = True
+    _fallback_artist: bool = True
     _notify_url: str = ""
     _notify_token: str = ""
     _notify_enabled: bool = False
@@ -208,6 +209,7 @@ class MusicDownloader(_PluginBase):
             k.strip().lower() for k in str(config.get("exclude_keywords") or "").split(",") if k.strip()
         ]
         self._show_uncertain = bool(config.get("show_uncertain", True))
+        self._fallback_artist = bool(config.get("fallback_artist", True))
         self._notify_enabled = bool(config.get("notify_enabled", False))
         self._notify_url = str(config.get("notify_url") or "").strip()
         self._notify_token = str(config.get("notify_token") or "").strip()
@@ -231,6 +233,9 @@ class MusicDownloader(_PluginBase):
             "min_seeders": self._min_seeders, "max_size_gb": self._max_size_gb,
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
             "check_interval": self._check_interval,
@@ -280,28 +285,14 @@ class MusicDownloader(_PluginBase):
     # ------------------------------------------------------------------ #
     # 搜索 + 筛查（核心）
     # ------------------------------------------------------------------ #
-    async def do_search(self, keyword: str = None, artist: str = None,
-                        album: str = None, year: int = None,
-                        limit: int = 10,
-                        prefer_lossless: Optional[bool] = None,
-                        min_seeders: Optional[int] = None) -> dict:
-        """全站点关键词搜索 -> 音乐/影视判别 -> 无损优先 -> 排序
-
-        结果写入 MoviePilot 共享缓存（__search_result__），与官方 Agent 工具
-        get_search_results / add_download_tasks 互通；每项带 hash:id 引用。
-        """
-        kw = build_keyword(keyword=keyword, artist=artist, album=album, year=year)
-        if not kw:
-            return {"keyword": "", "total": 0, "results": []}
-        site_ids = self._resolve_site_ids()
-        if not site_ids:
-            logger.warn("【%s】没有可搜索的站点", self.plugin_name)
-            return {"keyword": kw, "total": 0, "results": []}
-
+    async def _search_and_screen(self, kw: str, cfg: dict,
+                                  site_ids: List[int],
+                                  artist: str = None, album: str = None,
+                                  keyword: str = None) -> dict:
+        """单次搜索 + 写共享缓存 + 筛查 + 相关度排序"""
         contexts = await SearchChain().async_search_by_title(
             title=kw, sites=site_ids, page=0, cache_local=False
         ) or []
-
         # 写入共享缓存（后续 hash:id 引用基于该缓存解析）
         await SearchChain().async_save_cache(contexts, SEARCH_RESULT_CACHE_FILE)
 
@@ -327,6 +318,26 @@ class MusicDownloader(_PluginBase):
                 "pubdate": t.pubdate,
                 "enclosure": t.enclosure,
             })
+        return screen(items, cfg, artist=artist, album=album, keyword=keyword)
+
+    async def do_search(self, keyword: str = None, artist: str = None,
+                        album: str = None, year: int = None,
+                        limit: int = 10,
+                        prefer_lossless: Optional[bool] = None,
+                        min_seeders: Optional[int] = None) -> dict:
+        """全站点关键词搜索 -> 音乐/影视判别 -> 无损优先+相关度 -> 排序
+
+        结果写入 MoviePilot 共享缓存（__search_result__），与官方 Agent 工具
+        get_search_results / add_download_tasks 互通；每项带 hash:id 引用。
+        单曲关键词无结果时，可自动退回「艺人名」再搜一轮（fallback_artist）。
+        """
+        kw = build_keyword(keyword=keyword, artist=artist, album=album, year=year)
+        if not kw:
+            return {"keyword": "", "total": 0, "results": []}
+        site_ids = self._resolve_site_ids()
+        if not site_ids:
+            logger.warn("【%s】没有可搜索的站点", self.plugin_name)
+            return {"keyword": kw, "total": 0, "results": []}
 
         cfg = {
             "require_music": self._require_music,
@@ -335,10 +346,25 @@ class MusicDownloader(_PluginBase):
             "max_size_gb": self._max_size_gb,
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
         }
-        result = screen(items, cfg)
+        result = await self._search_and_screen(
+            kw, cfg, site_ids, artist=artist, album=album, keyword=keyword)
+
+        # 单曲/专辑关键词无结果 -> 退回艺人名搜索（PT 站常按专辑/艺人建种）
+        artist_only = build_keyword(keyword=artist)
+        if (not result["results"] and self._fallback_artist
+                and artist and artist_only and artist_only != kw):
+            logger.info("【%s】关键词 %s 无结果，退回艺人搜索：%s",
+                        self.plugin_name, kw, artist_only)
+            result = await self._search_and_screen(
+                artist_only, cfg, site_ids, artist=artist, album=album,
+                keyword=keyword)
+
         self._last_kw = kw
-        self._last_dropped = result["dropped"]
+        self._last_dropped = result["dropped_video"] + result["dropped_uncertain"]
 
         results = []
         for item in result["results"][:limit]:
@@ -354,6 +380,7 @@ class MusicDownloader(_PluginBase):
                 "audio_format": item["audio_format"],
                 "quality": item["quality"],
                 "quality_label": item["quality_label"],
+                "relevance": item["relevance"],
                 "size_text": fmt_size(item.get("size")),
                 "seeders": item["seeders"],
                 "grabs": item["grabs"],
@@ -365,7 +392,8 @@ class MusicDownloader(_PluginBase):
             "keyword": kw,
             "searched_sites": [s.get("name") for s in self.api_site_list()],
             "total": len(results),
-            "dropped_video": result["dropped"],
+            "dropped_video": result["dropped_video"],
+            "dropped_uncertain": result["dropped_uncertain"],
             "results": results,
         }
 
@@ -565,6 +593,9 @@ class MusicDownloader(_PluginBase):
             "max_size_gb": self._max_size_gb,
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled,
             "notify_url": self._notify_url,
             "check_interval": self._check_interval,
@@ -736,15 +767,20 @@ class MusicDownloader(_PluginBase):
                                       "props": {"model": "check_interval", "label": "完成检测间隔(秒)"}}]},
                     ]},
                     {"component": "VRow", "content": [
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VSwitch",
                                       "props": {"model": "require_music", "label": "仅保留音乐"}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VSwitch",
                                       "props": {"model": "prefer_lossless", "label": "无损优先"}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
                          "content": [{"component": "VSwitch",
                                       "props": {"model": "show_uncertain", "label": "展示不确定项"}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 3},
+                         "content": [{"component": "VSwitch",
+                                      "props": {"model": "fallback_artist", "label": "无结果退艺人搜索",
+                                                "hint": "单曲搜不到时按艺人名再搜一轮",
+                                                "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 4},
@@ -789,6 +825,9 @@ class MusicDownloader(_PluginBase):
             "min_seeders": self._min_seeders, "max_size_gb": self._max_size_gb,
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
+            "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
             "check_interval": self._check_interval,
