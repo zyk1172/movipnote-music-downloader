@@ -26,7 +26,7 @@ package.json           # 插件市场索引（version 需与 __init__.py plugin_
 
 ### 方式一：插件市场（推荐）
 
-1. 本仓库推送到 Git（`main` 分支）；
+1. 本仓库已推送至 **https://github.com/zyk1172/movipnote-music-downloader**（私有，`main` 分支）；
 2. MoviePilot 后台 → 设置 → 插件市场 → 加入本仓库地址；
 3. 安装「音乐下载」，按配置页填写：
    - 音乐下载目录（MoviePilot 已配置下载目录或其子目录）
