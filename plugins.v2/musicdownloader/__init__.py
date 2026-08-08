@@ -152,7 +152,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.4.2"
+    plugin_version = "0.4.3"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -177,6 +177,7 @@ class MusicDownloader(_PluginBase):
     _notify_url: str = ""
     _notify_token: str = ""
     _notify_enabled: bool = False
+    _notify_on_search: bool = True
     _webhook_token: str = ""
 
     # 最近一次搜索摘要（仅内存，用于响应与日志）
@@ -212,6 +213,7 @@ class MusicDownloader(_PluginBase):
         self._show_uncertain = bool(config.get("show_uncertain", True))
         self._fallback_artist = bool(config.get("fallback_artist", True))
         self._notify_enabled = bool(config.get("notify_enabled", False))
+        self._notify_on_search = bool(config.get("notify_on_search", True))
         self._notify_url = str(config.get("notify_url") or "").strip()
         self._notify_token = str(config.get("notify_token") or "").strip()
         self._webhook_token = str(config.get("webhook_token") or "").strip()
@@ -231,7 +233,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
+            "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
+            "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         })
 
@@ -269,6 +272,9 @@ class MusicDownloader(_PluginBase):
              "summary": "测试通知"},
             {"path": "/status", "endpoint": self.api_status, "methods": ["GET"],
              "summary": "插件状态"},
+            {"path": "/on_complete", "endpoint": self.api_on_complete, "methods": ["GET"],
+             "summary": "下载完成回调",
+             "description": "qBittorrent外部程序回调：?hash=%I&name=%N"},
         ]
         auth_dep = Depends(_make_auth_check(self))
         for item in api_list:
@@ -485,17 +491,27 @@ class MusicDownloader(_PluginBase):
             except Exception as exc:
                 logger.error(f"【{self.plugin_name}】下载异常: {exc}",
                              exc_info=True)
+                self._push_result("download_failed", {
+                    "title": torrent.title or title or "", "reason": str(exc),
+                }, f"下载失败：{torrent.title or title or ''}", f"异常：{exc}")
                 return {"success": False,
                         "message": f"下载异常 {type(exc).__name__}: {exc}"}
             if not did:
+                self._push_result("download_failed", {
+                    "title": torrent.title or title or "", "reason": err,
+                }, f"下载失败：{torrent.title or title or ''}", f"原因：{err}")
                 return {"success": False, "message": f"加入下载失败: {err}"}
             self._record(did=did, title=torrent.title or title or "",
                          site=torrent.site_name or "", save_path=self._music_dir,
                          status="downloading")
-            self._notify(event="music.download.added",
-                         title=torrent.title or title or "音乐下载",
-                         text=f"{torrent.site_name or '-'} | 保存到 {self._music_dir}",
-                         payload={"hash": did, "save_path": self._music_dir})
+            self._push_result("download_added", {
+                "hash": did,
+                "title": torrent.title or title or "音乐下载",
+                "site": torrent.site_name or "",
+                "save_path": self._music_dir,
+                "status": "downloading",
+            }, f"已加入下载：{torrent.title or title or '音乐下载'}",
+               f"{torrent.site_name or '-'} | 保存到 {self._music_dir}")
             return {"success": True, "data": {"hash": did,
                                               "save_path": self._music_dir,
                                               "label": self._label,
@@ -516,9 +532,16 @@ class MusicDownloader(_PluginBase):
                 return {"success": False, "message": "未找到可用下载器"}
             _, did, _, err = result
             if not did:
+                self._push_result("download_failed", {
+                    "title": title or "磁力下载", "reason": err,
+                }, f"下载失败：{title or '磁力下载'}", f"原因：{err}")
                 return {"success": False, "message": f"加入下载失败: {err}"}
             self._record(did=did, title=title or "磁力下载", site="magnet",
                          save_path=self._music_dir, status="downloading")
+            self._push_result("download_added", {
+                "hash": did, "title": title or "磁力下载", "site": "magnet",
+                "save_path": self._music_dir, "status": "downloading",
+            }, f"已加入下载：{title or '磁力下载'}", f"保存到 {self._music_dir}")
             return {"success": True, "data": {"hash": did,
                                               "save_path": self._music_dir}}
 
@@ -536,10 +559,26 @@ class MusicDownloader(_PluginBase):
             min_seeders=payload.get("min_seeders"),
             album_aliases=payload.get("album_aliases"),
         )
-        if data.get("results"):
-            self._notify(event="music.search",
-                         title=f"搜索音乐：{data.get('keyword')}",
-                         text=f"筛选出 {len(data['results'])} 条音乐资源")
+        if self._notify_on_search:
+            if data.get("results"):
+                self._push_result("search_ready", {
+                    "keyword": data.get("keyword"),
+                    "total": len(data["results"]),
+                    "album_matched_any": data.get("album_matched_any"),
+                    "top": [{"ref": r["ref"], "title": r["title"],
+                             "site_name": r["site_name"],
+                             "quality_label": r["quality_label"],
+                             "relevance": r["relevance"],
+                             "album_matched": r["album_matched"]}
+                            for r in data["results"][:5]],
+                }, f"搜索音乐：{data.get('keyword')}",
+                   f"筛选出 {len(data['results'])} 条音乐资源")
+            else:
+                self._push_result("no_resource", {
+                    "keyword": data.get("keyword"),
+                    "searched_sites": data.get("searched_sites"),
+                }, f"没有找到 {data.get('keyword')} 的音乐资源",
+                   "可尝试更换关键词，或启用「无结果退艺人搜索」")
         return {"success": True, "data": data}
 
     async def api_download(self, payload: dict = Body(default_factory=dict)) -> dict:
@@ -555,10 +594,74 @@ class MusicDownloader(_PluginBase):
             magnet=payload.get("magnet"), title=payload.get("title"))
 
     async def api_tasks(self, status: Optional[str] = None) -> dict:
+        """查询任务：合并插件历史 + 下载器实时状态；检测到完成/暂停时更新并推送结果"""
         history = self.get_data("downloads") or []
-        return {"success": True,
-                "data": {"tasks": [h for h in history
-                                   if not status or h.get("status") == status]}}
+        live: Dict[str, dict] = {}
+        try:
+            torrents = DownloadChain().list_torrents(include_all_tags=True) or []
+            live = {t.hash: self._torrent_to_dict(t)
+                    for t in torrents if t.hash}
+        except Exception as err:
+            logger.error(f"【{self.plugin_name}】查询下载器任务失败: {err}")
+
+        changed = False
+        for item in history:
+            if item.get("status") != "downloading":
+                continue
+            lt = live.get(item["hash"])
+            if not lt:
+                continue
+            state = lt.get("state")
+            if state == "completed":
+                item["status"] = "completed"
+                item["finish_time"] = datetime.now().isoformat()
+                changed = True
+                self._push_result("download_completed", {
+                    "hash": item["hash"], "title": item.get("title"),
+                    "save_path": item.get("save_path"),
+                }, f"下载成功：{item.get('title')}", f"保存到 {item.get('save_path')}")
+            elif state == "paused":
+                item["status"] = "paused"
+                changed = True
+        if changed:
+            self.save_data("downloads", history)
+
+        tasks = []
+        for item in history:
+            lt = live.get(item["hash"]) or {}
+            tasks.append({
+                "hash": item["hash"],
+                "title": item.get("title"),
+                "site": item.get("site"),
+                "status": item["status"],
+                "state": lt.get("state"),
+                "progress": lt.get("progress"),
+                "dlspeed": lt.get("dlspeed"),
+                "save_path": lt.get("save_path") or item.get("save_path"),
+            })
+        if status:
+            tasks = [t for t in tasks if t["status"] == status]
+        return {"success": True, "data": {"tasks": tasks}}
+
+    async def api_on_complete(self, hash: str = None, name: str = None) -> dict:
+        """下载完成回调（qBittorrent 外部程序）：GET ?hash=%I&name=%N"""
+        if not hash:
+            return {"success": False, "message": "缺少 hash 参数"}
+        history = self.get_data("downloads") or []
+        changed = False
+        for item in history:
+            if item.get("hash") == hash and item.get("status") == "downloading":
+                item["status"] = "completed"
+                item["finish_time"] = datetime.now().isoformat()
+                changed = True
+                self._push_result("download_completed", {
+                    "hash": item["hash"], "title": item.get("title") or name,
+                    "save_path": item.get("save_path"),
+                }, f"下载成功：{item.get('title') or name}",
+                   f"保存到 {item.get('save_path')}")
+        if changed:
+            self.save_data("downloads", history)
+        return {"success": True, "message": "ok"}
 
     async def api_sites(self) -> dict:
         return {"success": True, "data": {
@@ -572,8 +675,8 @@ class MusicDownloader(_PluginBase):
                 for s in SiteOper().list() or [] if s.id in site_ids]
 
     async def api_notify_test(self, payload: dict = Body(default_factory=dict)) -> dict:
-        ok = self._notify(event="music.notify.test",
-                          title="音乐下载插件测试", text="这是一条测试通知")
+        ok = self._push_result("notify_test", {"message": "这是一条测试通知"},
+                               "音乐下载插件测试", "这是一条测试通知")
         return {"success": bool(ok), "message": "通知已发送" if ok else "通知发送失败"}
 
     async def api_status(self) -> dict:
@@ -593,6 +696,7 @@ class MusicDownloader(_PluginBase):
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
             "notify_enabled": self._notify_enabled,
+            "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
         }}
 
@@ -638,13 +742,27 @@ class MusicDownloader(_PluginBase):
         return []
 
     # ------------------------------------------------------------------ #
-    # 通知
+    # 结果推送（结构化状态 -> Agent/音乐APP）
+    #   类型：no_resource / search_ready / download_added / download_completed / download_failed / notify_test
     # ------------------------------------------------------------------ #
-    def _notify(self, event: str, title: str, text: str,
-                payload: dict = None) -> bool:
+    @staticmethod
+    def _torrent_to_dict(t) -> dict:
+        """DownloaderTorrent 是 Pydantic 模型（属性访问），统一转 dict"""
+        if hasattr(t, "model_dump"):
+            try:
+                return t.model_dump()
+            except Exception:
+                pass
+        keys = ("hash", "title", "name", "state", "progress", "save_path",
+                "tags", "category", "downloader", "size", "dlspeed", "upspeed")
+        return {k: getattr(t, k, None) for k in keys}
+
+    def _push_result(self, rtype: str, payload: dict,
+                     title: str, text: str) -> bool:
+        """推送结构化结果给 Agent/音乐APP（Webhook JSON）+ 原生渠道"""
         sent = False
+        body = {"event": "music.result", "type": rtype, "payload": payload or {}}
         if self._notify_enabled and self._notify_url:
-            body = {"event": event, "payload": payload or {}}
             try:
                 import requests
                 headers = {}
@@ -654,7 +772,7 @@ class MusicDownloader(_PluginBase):
                                      headers=headers, timeout=10)
                 sent = resp.ok
             except Exception as err:
-                logger.error(f"【{self.plugin_name}】Webhook 通知失败: {err}")
+                logger.error(f"【{self.plugin_name}】结果推送失败: {err}")
         try:
             self.post_message(mtype=NotificationType.Download,
                               title=title, text=text)
@@ -754,10 +872,19 @@ class MusicDownloader(_PluginBase):
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 6},
                          "content": [{"component": "VTextField",
-                                      "props": {"model": "notify_url", "label": "音乐APP Webhook URL"}}]},
+                                      "props": {"model": "notify_url", "label": "音乐APP Webhook URL",
+                                                "hint": "结果推送地址（POST JSON）",
+                                                "persistent-hint": True}}]},
                         {"component": "VCol", "props": {"cols": 12, "md": 6},
                          "content": [{"component": "VTextField",
                                       "props": {"model": "notify_token", "label": "Webhook Token（可选）"}}]},
+                    ]},
+                    {"component": "VRow", "content": [
+                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                         "content": [{"component": "VSwitch",
+                                      "props": {"model": "notify_on_search", "label": "搜索后推送结果",
+                                                "hint": "把 没有资源/候选就绪 状态推给Agent",
+                                                "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 6},
@@ -782,7 +909,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "notify_enabled": self._notify_enabled, "notify_url": self._notify_url,
+            "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
+            "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
         }
 
