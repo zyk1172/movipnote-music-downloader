@@ -28,7 +28,7 @@ from fastapi import Body, Depends, Header, HTTPException
 from app.chain.download import DownloadChain
 from app.core.config import settings
 from app.chain.search import SearchChain
-from app.core.context import Context
+from app.core.context import Context, MediaInfo
 from app.core.metainfo import MetaInfo
 from app.db.site_oper import SiteOper
 from app.db.systemconfig_oper import SystemConfigOper
@@ -36,7 +36,7 @@ from app.helper.directory import validate_download_save_path
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import TorrentInfo
-from app.schemas.types import NotificationType, SystemConfigKey
+from app.schemas.types import MediaType, NotificationType, SystemConfigKey
 from app.utils.crypto import HashUtils
 
 from .screener import (
@@ -150,7 +150,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.3.4"
+    plugin_version = "0.3.5"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -380,7 +380,11 @@ class MusicDownloader(_PluginBase):
             return None
         if index < 1:
             return None
-        results = await SearchChain().async_last_search_results() or []
+        try:
+            results = await SearchChain().async_last_search_results() or []
+        except Exception as exc:
+            logger.error(f"【{self.plugin_name}】读取搜索缓存失败: {exc}")
+            return None
         if index > len(results):
             return None
         context = results[index - 1]
@@ -436,16 +440,28 @@ class MusicDownloader(_PluginBase):
                 return {"success": False, "message": "缺少 title/enclosure"}
 
         if torrent:
-            did, err = await asyncio.to_thread(
-                DownloadChain().download_single,
-                context=Context(meta_info=MetaInfo(title=torrent.title),
-                                torrent_info=torrent),
-                save_path=self._music_dir,
-                downloader=self._downloader or None,
-                label=self._label,
-                username=self.plugin_name,
-                return_detail=True,
-            )
+            # 音乐无影视媒体信息：构造最小 MediaInfo（type=未知），避免 download_single
+            # 在登记下载历史等环节因 mediainfo=None 崩溃
+            media = MediaInfo()
+            media.title = torrent.title or ""
+            media.type = MediaType.UNKNOWN
+            try:
+                did, err = await asyncio.to_thread(
+                    DownloadChain().download_single,
+                    context=Context(meta_info=MetaInfo(title=torrent.title),
+                                    media_info=media,
+                                    torrent_info=torrent),
+                    save_path=self._music_dir,
+                    downloader=self._downloader or None,
+                    label=self._label,
+                    username=self.plugin_name,
+                    return_detail=True,
+                )
+            except Exception as exc:
+                logger.error(f"【{self.plugin_name}】下载异常: {exc}",
+                             exc_info=True)
+                return {"success": False,
+                        "message": f"下载异常 {type(exc).__name__}: {exc}"}
             if not did:
                 return {"success": False, "message": f"加入下载失败: {err}"}
             self._record(did=did, title=torrent.title or title or "",
