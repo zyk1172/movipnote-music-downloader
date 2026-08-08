@@ -3,11 +3,12 @@
     "name": "音乐下载",
     "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
     "labels": "音乐,下载",
-    "version": "0.3.2",
+    "version": "0.3.3",
     "icon": "icon.png",
     "author": "zyk1172",
     "level": 1,
     "history": {
+      "v0.3.3": "真正落地X-Music-Token鉴权：配置音乐APP调用Token后，插件API支持X-Music-Token调用（兼容系统apikey）",
       "v0.3.2": "修正为MoviePilot V2市场结构：package.v2.json + plugins.v2/musicdownloader",
       "v0.3.1": "修正插件作者与图标URL（对齐GitHub仓库）",
       "v0.3.0": "接入官方hash:id引用机制；筛查引擎抽离为screener.py并附校准工具与回归测试",

@@ -23,9 +23,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import Body
+from fastapi import Body, Depends, Header, HTTPException
 
 from app.chain.download import DownloadChain
+from app.core.config import settings
 from app.chain.search import SearchChain
 from app.core.context import Context
 from app.core.metainfo import MetaInfo
@@ -63,6 +64,25 @@ REF_PATTERN = re.compile(r"^[0-9a-f]{7}:\d+$")
 def _build_ref(torrent: TorrentInfo) -> str:
     """生成官方同款 hash:id 短引用（sha1(enclosure)[:7]）"""
     return HashUtils.sha1(torrent.enclosure or "")[:7]
+
+
+def _make_auth_check(plugin: "MusicDownloader"):
+    """构造插件 API 鉴权依赖：
+    - 配置了 webhook_token 时：X-Music-Token 匹配 或 系统 X-API-KEY/apikey 通过 即可；
+    - 未配置 webhook_token 时：仅系统 X-API-KEY/apikey 通过（保持默认 apikey 鉴权）。
+    """
+    async def _check(
+        x_apikey: Optional[str] = Header(default=None, alias="X-API-KEY"),
+        x_music_token: Optional[str] = Header(default=None, alias="X-Music-Token"),
+        apikey: Optional[str] = None,
+    ):
+        if plugin._webhook_token and x_music_token == plugin._webhook_token:
+            return True
+        key = (x_apikey or "").strip() or (apikey or "").strip()
+        if key and key == settings.API_TOKEN:
+            return True
+        raise HTTPException(status_code=401, detail="apikey 校验不通过")
+    return _check
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +150,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.3.2"
+    plugin_version = "0.3.3"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -236,8 +256,12 @@ class MusicDownloader(_PluginBase):
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """REST API，挂载于 /api/v1/plugin/MusicDownloader/*，默认 apikey 鉴权"""
-        return [
+        """REST API，挂载于 /api/v1/plugin/MusicDownloader/*。
+
+        鉴权：配置了「音乐APP调用Token(webhook_token)」时，允许 X-Music-Token 调用；
+        同时始终兼容系统 X-API-KEY / ?apikey=。
+        """
+        api_list = [
             {"path": "/search", "endpoint": self.api_search, "methods": ["POST"],
              "summary": "搜索音乐资源", "description": "全站点关键词搜索+音乐/影视筛查"},
             {"path": "/download", "endpoint": self.api_download, "methods": ["POST"],
@@ -253,6 +277,11 @@ class MusicDownloader(_PluginBase):
             {"path": "/status", "endpoint": self.api_status, "methods": ["GET"],
              "summary": "插件状态"},
         ]
+        auth_dep = Depends(_make_auth_check(self))
+        for item in api_list:
+            item["allow_anonymous"] = True
+            item["dependencies"] = [auth_dep]
+        return api_list
 
     # ------------------------------------------------------------------ #
     # 搜索 + 筛查（核心）
