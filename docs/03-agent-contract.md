@@ -169,8 +169,9 @@ APP 的「测试按钮」调此接口，逐项展示 `ok/detail`。
 ## 9. 完成判定（按可靠性排序）
 
 - **A. qBittorrent 完成回调（推荐，即时可靠）**：qb 设置 → 下载 → 完成后运行外部程序：
-  `curl -s -H "X-Music-Token: <token>" "http://<MP>:3000/api/v1/plugin/MusicDownloader/on_complete?hash=%I&name=%N"`
+  `curl -s "http://<MP>:3000/api/v1/plugin/MusicDownloader/on_complete?hash=%I&name=%N&token=<token>"`
 - **B. `/tasks` 轮询**：`live_available=true` 时按 `state/progress` 判定完成（毫秒级，按历史 hash 精准查）。
+- **C. 低频对账（内置）**：插件默认每 30 分钟自动对账一次（设置「状态对账间隔(分钟)」，0=关），下载中→已完成时主动推送 `download_completed`，客户端不轮询也能收到。
 
 ## 10. 错误码速查
 

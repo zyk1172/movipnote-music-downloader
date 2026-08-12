@@ -137,7 +137,7 @@
 - A. **拉取**：APP 每 30–60s `GET /tasks`，插件实时返回下载器 `state/progress`；状态 `downloading → completed` 即成功。
 - B. **即时推送（推荐）**：在 qBittorrent 设置 → 下载 → 完成后运行外部程序填入：
   ```
-  curl -s -H "X-Music-Token: <webhook_token>" "http://<MP-HOST>:3000/api/v1/plugin/MusicDownloader/on_complete?hash=%I&name=%N"
+  curl -s "http://<MP-HOST>:3000/api/v1/plugin/MusicDownloader/on_complete?hash=%I&name=%N&token=<webhook_token>"
   ```
   下载完成时插件即推送 `download_completed`，无需轮询。
 

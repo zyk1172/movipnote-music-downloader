@@ -3,11 +3,12 @@
     "name": "音乐下载",
     "description": "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载到音乐目录（仅下载，不刮削/不整理）。",
     "labels": "音乐,下载",
-    "version": "0.5.7",
+    "version": "0.5.8",
     "icon": "icon.png",
     "author": "zyk1172",
     "level": 1,
     "history": {
+      "v0.5.8": "修复审计问题：P0 _get_instance改用running_plugins(实例)恢复MCP工具；新增低频状态对账服务(默认30分钟可关)；/on_complete支持token查询参数(免header)；配置键去重；searched_sites返回实际站点；曲目校验缓存；线程池复用；动态属性显式初始化；label可配置",
       "v0.5.7": "新增清理历史：/history/clean 支持按状态清理(status)/只保留最近N条(keep)/清理下载器已不存在的孤儿(orphans)",
       "v0.5.6": "修复100%仍显示下载中：状态对账改为 进度≥99.9% 或 state=completed 即视为完成（stalledDL/queuedDL 等归一态也生效）；对账逻辑统一用于 /tasks、/history、详情页",
       "v0.5.5": "实时查询按历史hash精准查(14条而非全量994条，毫秒级)；超时提至8s；/test用探测hash真实连通；新增/history/remove移除孤儿记录",

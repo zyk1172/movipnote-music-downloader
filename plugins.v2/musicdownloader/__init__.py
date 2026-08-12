@@ -63,6 +63,16 @@ DEFAULT_CATEGORY = "音乐"
 SEARCH_RESULT_CACHE_FILE = "__search_result__"
 REF_PATTERN = re.compile(r"^[0-9a-f]{7}:\d+$")
 
+# 曲目校验结果缓存（按种子 enclosure hash，短 TTL，避免每次下载前重复拉种子耗站点配额）
+_VERIFY_CACHE: Dict[str, tuple] = {}
+_VERIFY_TTL = 600
+
+
+# 下载器实时查询共用线程池（daemon，避免每次新建）
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+_LIVE_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="MusicDownloaderLive")
+
+
 
 def _build_ref(torrent: TorrentInfo) -> str:
     """生成官方同款 hash:id 短引用（sha1(enclosure)[:7]）"""
@@ -78,11 +88,16 @@ def _make_auth_check(plugin: "MusicDownloader"):
         x_apikey: Optional[str] = Header(default=None, alias="X-API-KEY"),
         x_music_token: Optional[str] = Header(default=None, alias="X-Music-Token"),
         apikey: Optional[str] = None,
+        token: Optional[str] = None,
     ):
-        if plugin._webhook_token and x_music_token == plugin._webhook_token:
+        # 插件级 Token：X-Music-Token 头 或 token 查询参数（qB 完成回调只能用查询参数）
+        if plugin._webhook_token and (
+                x_music_token == plugin._webhook_token
+                or (token or "").strip() == plugin._webhook_token):
             return True
-        key = (x_apikey or "").strip() or (apikey or "").strip()
-        if key and key == settings.API_TOKEN:
+        # 系统 apikey：header 与 query 各自独立校验（header 错不覆盖 query 对）
+        if ((x_apikey or "").strip() == settings.API_TOKEN
+                or (apikey or "").strip() == settings.API_TOKEN):
             return True
         raise HTTPException(status_code=401, detail="apikey 校验不通过")
     return _check
@@ -170,7 +185,7 @@ class MusicDownloader(_PluginBase):
 
     plugin_name = "音乐下载"
     plugin_desc = "在所有启用站点搜索并筛查音乐资源，用MoviePilot下载器下载（不刮削/不整理）"
-    plugin_version = "0.5.7"
+    plugin_version = "0.5.8"
     plugin_author = "zyk1172"
     plugin_icon = "https://raw.githubusercontent.com/zyk1172/movipnote-music-downloader/main/plugins.v2/musicdownloader/icon.png"
 
@@ -195,6 +210,7 @@ class MusicDownloader(_PluginBase):
     _fallback_artist: bool = True
     _single_fallback_album: bool = True
     _track_verify: bool = True
+    _reconcile_interval_min: int = 30
     _notify_url: str = ""
     _notify_token: str = ""
     _notify_enabled: bool = False
@@ -239,6 +255,10 @@ class MusicDownloader(_PluginBase):
         self._fallback_artist = bool(config.get("fallback_artist", True))
         self._single_fallback_album = bool(config.get("single_fallback_album", True))
         self._track_verify = bool(config.get("track_verify", True))
+        try:
+            self._reconcile_interval_min = max(0, int(config.get("reconcile_interval_min") or 30))
+        except (TypeError, ValueError):
+            self._reconcile_interval_min = 30
         self._notify_enabled = bool(config.get("notify_enabled", False))
         self._notify_on_search = bool(config.get("notify_on_search", True))
         self._notify_url = str(config.get("notify_url") or "").strip()
@@ -250,6 +270,7 @@ class MusicDownloader(_PluginBase):
         if not self._dir_valid:
             logger.error(f"【{self.plugin_name}】音乐下载目录校验失败: {self._dir_error}")
 
+        self.init_dynamic_state()
         self.update_config({
             "enabled": self._enabled, "music_dir": self._music_dir,
             "downloader": self._downloader, "torrent_category": self._category,
@@ -261,9 +282,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "single_fallback_album": self._single_fallback_album,
-            "track_verify": self._track_verify,
-            "track_verify": self._track_verify,
+            "single_fallback_album": self._single_fallback_album,            "track_verify": self._track_verify,
+            "reconcile_interval_min": self._reconcile_interval_min,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
@@ -274,6 +294,14 @@ class MusicDownloader(_PluginBase):
                 f"【{self.plugin_name}】已启用：目录={'通过' if self._dir_valid else '失败'}，"
                 f"搜索站点={len(self._resolve_site_ids())}，筛查=音乐/影视判别+无损优先"
             )
+
+    def init_dynamic_state(self):
+        """初始化/复位动态状态（多次调用间不残留旧值）"""
+        self._last_fallback_tried = False
+        self._last_fallback_resolved = None
+        self._last_fallback_album = None
+        self._last_kw = ""
+        self._last_dropped = 0
 
     def get_state(self) -> bool:
         return self._enabled
@@ -399,10 +427,13 @@ class MusicDownloader(_PluginBase):
 
         # 转成 screener 可处理的 dict，并记录在完整列表中的 1-based 序号
         items: List[Dict[str, Any]] = []
+        site_names: set = set()
         for pos, ctx in enumerate(contexts, start=1):
             t = ctx.torrent_info
             if not t:
                 continue
+            if t.site_name:
+                site_names.add(t.site_name)
             ref = f"{_build_ref(t)}:{pos}"
             items.append({
                 "index": pos,
@@ -419,8 +450,10 @@ class MusicDownloader(_PluginBase):
                 "pubdate": t.pubdate,
                 "enclosure": t.enclosure,
             })
-        return screen(items, cfg, artist=artist, album=album,
-                      keyword=keyword, album_aliases=album_aliases)
+        result = screen(items, cfg, artist=artist, album=album,
+                        keyword=keyword, album_aliases=album_aliases)
+        result["sites_used"] = sorted(site_names)
+        return result
 
     async def do_search(self, keyword: str = None, artist: str = None,
                         album: str = None, year: int = None,
@@ -532,7 +565,8 @@ class MusicDownloader(_PluginBase):
 
         return {
             "keyword": kw,
-            "searched_sites": [s.get("name") for s in self.api_site_list()],
+            "searched_sites": result.get("sites_used")
+                              or [s.get("name") for s in self.api_site_list()],
             "total": len(results),
             "album_matched_any": any(r.get("album_matched") for r in results),
             "fallback_tried": self._last_fallback_tried,
@@ -950,9 +984,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": self._exclude_keywords,
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "single_fallback_album": self._single_fallback_album,
-            "track_verify": self._track_verify,
-            "track_verify": self._track_verify,
+            "single_fallback_album": self._single_fallback_album,            "track_verify": self._track_verify,
+            "reconcile_interval_min": self._reconcile_interval_min,
             "notify_enabled": self._notify_enabled,
             "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
@@ -976,9 +1009,18 @@ class MusicDownloader(_PluginBase):
                                 artist: str) -> Tuple[Optional[bool], List[str], str]:
         """下载种子并解析文件清单，校验是否包含目标歌曲（同步，线程内调用）
 
+        结果按 enclosure hash 缓存 _VERIFY_TTL 秒，避免每次下载前重复拉种子。
+
         :return: (是否命中, 命中文件, 提示)
           True/False/None（None=整轨/磁力/无法校验）
         """
+        import time as _t
+        key = (torrent.enclosure or "") and HashUtils.sha1(torrent.enclosure or "")[:16]
+        now = _t.time()
+        if key:
+            cached = _VERIFY_CACHE.get(key)
+            if cached and now - cached[0] < _VERIFY_TTL:
+                return cached[1]
         try:
             content, _folder, files = DownloadChain().download_torrent(torrent)
         except Exception as err:
@@ -992,8 +1034,12 @@ class MusicDownloader(_PluginBase):
             file_list = files or []
         ok, matched = check_torrent_files(file_list, song, artist)
         if ok is None:
-            return None, [], "整轨/单文件，无法逐曲校验"
-        return ok, matched, ""
+            result = (None, [], "整轨/单文件，无法逐曲校验")
+        else:
+            result = (ok, matched, "")
+        if key:
+            _VERIFY_CACHE[key] = (now, result)
+        return result
 
     @staticmethod
     def _resolve_album(artist: str, song: str) -> Optional[str]:
@@ -1058,12 +1104,30 @@ class MusicDownloader(_PluginBase):
     # 后台服务：按需使用，不做周期轮询
     # ------------------------------------------------------------------ #
     def get_service(self) -> List[Dict[str, Any]]:
-        """按需下载，不注册周期检测服务。
-
-        下载完成通知如需开启，后续可改为「下载器完成回调/Webhook」驱动，
-        避免定时轮询 DownloaderTorrent 造成日志噪音。
+        """低频状态对账（默认30分钟，0=关闭）：按历史 hash 精准查下载器，
+        推进下载中->已完成并推送 download_completed。频率低、不阻塞、不刷屏。
         """
+        if self._enabled and self._reconcile_interval_min > 0:
+            return [{
+                "id": "status_reconcile",
+                "name": "下载状态对账（低频）",
+                "trigger": "interval",
+                "func": self.__reconcile_job,
+                "kwargs": {"seconds": max(60, self._reconcile_interval_min * 60)},
+            }]
         return []
+
+    def __reconcile_job(self):
+        """低频对账：下载中->已完成/暂停，完成时推送 download_completed"""
+        try:
+            history = self.get_data("downloads") or []
+            hashes = [h.get("hash") for h in history if h.get("hash")]
+            live = self._live_torrents(hashs=hashes) or {}
+            history, changed = self._reconcile_status(history, live)
+            if changed:
+                self.save_data("downloads", history)
+        except Exception as err:
+            logger.warn(f"【{self.plugin_name}】状态对账失败: {err}")
 
     # ------------------------------------------------------------------ #
     # 结果推送（结构化状态 -> Agent/音乐APP）
@@ -1142,6 +1206,22 @@ class MusicDownloader(_PluginBase):
                         {"component": "VCol", "props": {"cols": 12, "md": 4},
                          "content": [{"component": "VTextField",
                                       "props": {"model": "downloader", "label": "下载器（留空=默认）"}}]},
+                    ]},
+                    {"component": "VRow", "content": [
+                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                         "content": [{"component": "VTextField",
+                                      "props": {"model": "label", "label": "种子标签",
+                                                "hint": "逗号分隔，如 音乐,musicdownloader",
+                                                "persistent-hint": True}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                         "content": [{"component": "VTextField",
+                                      "props": {"model": "torrent_category", "label": "下载器分类",
+                                                "hint": "默认 音乐"}}]},
+                        {"component": "VCol", "props": {"cols": 12, "md": 4},
+                         "content": [{"component": "VTextField",
+                                      "props": {"model": "reconcile_interval_min", "label": "状态对账间隔(分钟)",
+                                                "hint": "0=关闭；默认30分钟，低频推进完成状态",
+                                                "persistent-hint": True}}]},
                     ]},
                     {"component": "VRow", "content": [
                         {"component": "VCol", "props": {"cols": 12, "md": 4},
@@ -1252,9 +1332,8 @@ class MusicDownloader(_PluginBase):
             "exclude_keywords": ",".join(self._exclude_keywords),
             "show_uncertain": self._show_uncertain,
             "fallback_artist": self._fallback_artist,
-            "single_fallback_album": self._single_fallback_album,
-            "track_verify": self._track_verify,
-            "track_verify": self._track_verify,
+            "single_fallback_album": self._single_fallback_album,            "track_verify": self._track_verify,
+            "reconcile_interval_min": self._reconcile_interval_min,
             "notify_enabled": self._notify_enabled, "notify_on_search": self._notify_on_search,
             "notify_url": self._notify_url,
             "notify_token": self._notify_token, "webhook_token": self._webhook_token,
@@ -1270,7 +1349,6 @@ class MusicDownloader(_PluginBase):
         """
         if not hashs:
             return {}
-        from concurrent.futures import ThreadPoolExecutor
 
         def _query() -> Dict[str, dict]:
             try:
@@ -1282,14 +1360,11 @@ class MusicDownloader(_PluginBase):
                 logger.warn(f"【{self.plugin_name}】查询下载器失败: {err}")
                 return {}
 
-        ex = ThreadPoolExecutor(max_workers=1)
         try:
-            return ex.submit(_query).result(timeout=timeout)
+            return _LIVE_POOL.submit(_query).result(timeout=timeout)
         except Exception:
             logger.warn(f"【{self.plugin_name}】查询下载器超时({timeout}s)，跳过实时状态")
             return None
-        finally:
-            ex.shutdown(wait=False)
 
     def _reconcile_status(self, history: List[dict],
                           live: Dict[str, dict]) -> Tuple[List[dict], bool]:
@@ -1418,8 +1493,8 @@ class MusicDownloader(_PluginBase):
 def _get_instance() -> Optional[MusicDownloader]:
     try:
         from app.core.plugin import PluginManager
-        # _plugins 以插件ID(=类名)为键保存插件实例
-        plugin = PluginManager().plugins.get(MusicDownloader.__name__)
+        # running_plugins 以插件ID(=类名)为键保存插件**实例**；plugins 存的是类
+        plugin = PluginManager().running_plugins.get(MusicDownloader.__name__)
         return plugin if isinstance(plugin, MusicDownloader) else None
     except Exception:
         return None
